@@ -309,9 +309,9 @@ var FOODS=[
 ['Rasam','ரசம்,charu',40,'cup',1,1.5],
 ['Chutney','சட்னி,coconut chutney,தேங்காய் சட்னி,thengai chutney',55,'serving',1,1.5],
 ['Idli podi','இட்லி பொடி,milagai podi,மிளகாய் பொடி',40,'serving',1,1.5],
-['Rice','சாதம்,சோறு,saadham,soru,sadam,white rice,arisi',205,'cup',1,4],
+['Rice','சாதம்,சோறு,saadham,soru,sadam,saadam,white rice,arisi,plain rice',205,'cup',1,4],
 ['Curd rice','தயிர் சாதம்,thayir sadam,thayir saadham',200,'cup',1,5],
-['Sambar rice','சாம்பார் சாதம்,sambar sadam',240,'cup',1,6],
+['Sambar rice','சாம்பார் சாதம்,sambar sadam,sambar saadam,sambhar rice',240,'cup',1,6],
 ['Lemon rice','எலுமிச்சை சாதம்,lemon sadam,elumichai sadam',250,'cup',1,4],
 ['Tamarind rice','புளியோதரை,puliyodharai,puliyodarai',280,'cup',1,4.5],
 ['Coconut rice','தேங்காய் சாதம்,thengai sadam',270,'cup',1,4],
@@ -325,7 +325,7 @@ var FOODS=[
 ['Poriyal','பொரியல்,porial',100,'serving',1,2.5],
 ['Kootu','கூட்டு',120,'serving',1,4],
 ['Avial','அவியல்',150,'serving',1,3],
-['Egg','முட்டை,muttai,boiled egg,mutta',78,'egg',1,6.3],
+['Egg','முட்டை,muttai,boiled egg,mutta,muuta,motta,muttah,eggs',78,'egg',1,6.3],
 ['Omelette','ஆம்லெட்,omlet,omlette',150,'omelette',1,11],
 ['Egg dosa','முட்டை தோசை,muttai dosai',200,'dosa',1,9],
 ['Chicken curry','சிக்கன் கறி,chicken kulambu,chicken gravy',250,'serving',1,20],
@@ -394,6 +394,7 @@ var D=load(), MODE='finance', TAB='home', SUB='spending', SPAN='week', FDAY=null
 
 function load(){
  try{var raw=localStorage.getItem(KEY);
+  if(!raw)raw=localStorage.getItem(KEY+'.bak');
   if(!raw){
    var old=localStorage.getItem('momentum.v2');
    if(old){var o=JSON.parse(old),s=clone(SEED);
@@ -402,7 +403,9 @@ function load(){
     s.settings.ready=1;
     return s;}
    return clone(SEED);}
-  var d=JSON.parse(raw);
+  var d;
+  try{d=JSON.parse(raw);}catch(e){d=JSON.parse(localStorage.getItem(KEY+'.bak')||'null');}
+  if(!d||!d.accounts)throw new Error('empty');
   Object.keys(SEED).forEach(function(k){
    if(d[k]===undefined)d[k]=clone(SEED[k]);
    else if(k==='health'||k==='settings'||k==='ai')
@@ -414,8 +417,66 @@ function load(){
   return d;}catch(e){return clone(SEED);}
 }
 function clone(x){return JSON.parse(JSON.stringify(x));}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(D));}
- catch(e){toast('Storage is full — export a backup in Setup.');}}
+var _mirrorT=null;
+function save(){
+ var json;
+ try{json=JSON.stringify(D);}catch(e){return;}
+ try{localStorage.setItem(KEY,json);}
+ catch(e){toast('Storage is full — export a backup in Setup.');}
+ try{localStorage.setItem(KEY+'.bak',json);}catch(e){}
+ clearTimeout(_mirrorT);
+ _mirrorT=setTimeout(function(){idbPut(json);},800);
+}
+
+/* A second copy in IndexedDB. Android clears a site's storage when space runs low or
+   the site looks unused; two stores in two places rarely go at the same moment. */
+function idbOpen(cb){
+ try{
+  var r=indexedDB.open('momentum',1);
+  r.onupgradeneeded=function(){r.result.createObjectStore('kv');};
+  r.onsuccess=function(){cb(r.result);};
+  r.onerror=function(){cb(null);};
+ }catch(e){cb(null);}
+}
+function idbPut(json){
+ idbOpen(function(db){
+  if(!db)return;
+  try{db.transaction('kv','readwrite').objectStore('kv').put({json:json,at:Date.now()},'snapshot');}
+  catch(e){}
+ });
+}
+function idbGet(cb){
+ idbOpen(function(db){
+  if(!db)return cb(null);
+  try{
+   var q=db.transaction('kv','readonly').objectStore('kv').get('snapshot');
+   q.onsuccess=function(){cb(q.result||null);};
+   q.onerror=function(){cb(null);};
+  }catch(e){cb(null);}
+ });
+}
+/* Ask Android to stop evicting us. An installed app is almost always granted this. */
+function keepStorage(){
+ try{
+  if(navigator.storage&&navigator.storage.persist)
+   navigator.storage.persisted().then(function(ok){if(!ok)navigator.storage.persist();});
+ }catch(e){}
+}
+/* If localStorage came back empty but a snapshot survived, put it back without asking. */
+function rescue(){
+ if(D.settings.ready)return;
+ idbGet(function(rec){
+  if(!rec||!rec.json)return;
+  try{
+   var d=JSON.parse(rec.json);
+   if(!d.settings||!d.settings.ready)return;
+   D=d;
+   Object.keys(SEED).forEach(function(k){if(D[k]===undefined)D[k]=clone(SEED[k]);});
+   save();chrome(true);draw();
+   toast('Your data was recovered from the backup copy on this phone.');
+  }catch(e){}
+ });
+}
 
 /* ---------- helpers ---------- */
 function N(n){return Math.round(Math.abs(n)).toLocaleString('en-IN');}
@@ -758,6 +819,18 @@ function parseFoodText(text){
   }
  });
  found.sort(function(a,b){return a.pos-b.pos;});
+ /* whatever the table could not account for */
+ var rest=t,i2;
+ var ranges=used.slice().sort(function(x,y){return y[0]-x[0];});
+ for(i2=0;i2<ranges.length;i2++)
+  rest=rest.slice(0,ranges[i2][0])+' '+rest.slice(ranges[i2][1]);
+ rest=rest.replace(/[\d.,]+/g,' ').split(' ').filter(function(w){
+  if(!w||w.length<3)return false;
+  if(NUMW[w]!==undefined)return false;
+  if(new RegExp('^(?:'+UNITW+')$').test(w))return false;
+  return !/^(and|with|some|the|ate|eat|had|have|today|morning|evening|night|plus|also|for|breakfast|lunch|dinner|snack|snacks|tiffin|\u0b9a\u0bbe\u0baa\u0bcd\u0baa\u0bbf\u0b9f\u0bcd\u0b9f\u0bc7\u0ba9\u0bcd|\u0b89\u0ba3\u0bb5\u0bc1|\u0bae\u0bb1\u0bcd\u0bb1\u0bc1\u0bae\u0bcd)$/.test(w);
+ }).join(' ').trim();
+ found.leftover=rest;
  return found;
 }
 function mealFromText(text){
@@ -875,6 +948,8 @@ function handle(text,thumb){
  var moneyWord=new RegExp('\\b('+SPEND_W+'|'+EARN_W+')\\b').test(t)
   ||/rs\.?\s*\d|₹|ரூபாய்|rupees?|rupai/.test(t);
 
+ /* the table understood only part of it and a key is available: let the AI read the whole line */
+ if(foods.length&&foods.leftover&&foods.leftover.length>2&&hasKey()&&!moneyWord)return null;
  if(foods.length&&(MODE==='health'||!moneyWord)){
   var drinksOnly=foods.every(function(f){return /tea|coffee|juice|milk|buttermilk|water|coconut|drink/i.test(f.name);});
   var meal=mealFromText(t)||(drinksOnly?'drinks':mealNow());
@@ -956,54 +1031,97 @@ function stopListening(){
  var gb2=document.getElementById('qgo');if(gb2)gb2.classList.remove('rec');
  var t=recText.trim();recText='';
  if(!t)return;
+ if(hasKey()){heardOk();aiText(t,MODE==='health'?mealNow():null);return;}
  var r=handle(t);
  if(r){heardOk();draw();toast(r);return;}
- if(hasKey()){heardOk();aiText(t);return;}
  toast(heardMiss()?'Did not catch that — switching language. Tap the mic and say it again.'
                   :'Did not catch that. Say it again, or type it.');
 }
 
 /* ================= AI — optional, the user's own key ================= */
-var MODELS=['gemini-3.8-flash','gemini-2.5-flash','gemini-flash-latest'];
+var AI_TRY=['gemini-flash-latest','gemini-2.5-flash','gemini-2.0-flash'];
 function hasKey(){return !!(D.ai.key&&D.ai.key.length>10);}
 /* Inside Claude's artifact frame the browser blocks every call to an outside service.
    Served from an ordinary web address, or opened as a file, the same call goes through. */
 function blocked(){
- try{return /claude\.ai|anthropic/i.test(location.hostname)||location.ancestorOrigins&&
-  location.ancestorOrigins.length>0;}catch(e){return false;}
+ try{return /claude\.ai|anthropic/i.test(location.hostname)||
+  (location.ancestorOrigins&&location.ancestorOrigins.length>0);}catch(e){return false;}
+}
+var GBASE='https://generativelanguage.googleapis.com/v1beta/';
+
+/* Google renames its models often, so rather than hard-coding one, ask the key which
+   models it can actually use and keep the answer. */
+function pickModel(cb){
+ if(D.ai.model)return cb(D.ai.model,null);
+ fetch(GBASE+'models?pageSize=200',{headers:{'x-goog-api-key':D.ai.key}})
+  .then(function(r){
+   return r.text().then(function(t){
+    if(!r.ok)throw new Error(apiErr(r.status,t));
+    return JSON.parse(t);});})
+  .then(function(j){
+   var ok=(j.models||[]).filter(function(m){
+     return (m.supportedGenerationMethods||[]).indexOf('generateContent')>-1;})
+    .map(function(m){return String(m.name).replace('models/','');})
+    .filter(function(n){return !/embed|aqa|tts|image-gen|imagen|veo|native-audio|live/i.test(n);});
+   var flash=ok.filter(function(n){return /flash/.test(n)&&!/thinking|lite|8b/i.test(n);});
+   var chosen=null,i;
+   for(i=0;i<AI_TRY.length&&!chosen;i++)
+    if(ok.indexOf(AI_TRY[i])>-1)chosen=AI_TRY[i];
+   chosen=chosen||flash[0]||ok[0];
+   if(!chosen)return cb(null,'The key works, but no usable model is enabled on it.');
+   D.ai.model=chosen;save();cb(chosen,null);
+  })
+  .catch(function(e){cb(null,netErr(e));});
+}
+function apiErr(status,text){
+ var msg='';
+ try{msg=(JSON.parse(text).error||{}).message||'';}catch(e){}
+ if(status===400&&/API key not valid|API_KEY_INVALID/i.test(msg))
+  return 'That key is not valid. Make a fresh one in AI Studio.';
+ if(status===403)
+  return 'Google refused the key. Open aistudio.google.com/apikey and check it is still there, '+
+   'and that the Generative Language API is on for its project.';
+ if(status===429)
+  return 'You have hit the free daily limit. Try again tomorrow.';
+ return 'Google said: '+(msg||('HTTP '+status));
+}
+function netErr(e){
+ var m=(e&&e.message)||'';
+ if(/failed to fetch|networkerror|load failed/i.test(m))
+  return blocked()
+   ? 'This page cannot call Google from inside Claude. Open the installed app instead.'
+   : 'Could not reach Google. Check the connection and try again.';
+ return m||'Something went wrong talking to Google.';
 }
 function gemini(parts,cb){
- if(!hasKey()){cb(null,'no-key');return;}
- var i=0;
- (function tryOne(){
-  if(i>=MODELS.length){cb(null,'No model accepted the request.');return;}
-  var model=MODELS[i++];
-  fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent',{
+ if(!hasKey())return cb(null,'no-key');
+ pickModel(function(model,err){
+  if(!model)return cb(null,err);
+  fetch(GBASE+'models/'+model+':generateContent',{
    method:'POST',
    headers:{'Content-Type':'application/json','x-goog-api-key':D.ai.key},
    body:JSON.stringify({contents:[{parts:parts}],
     generationConfig:{responseMimeType:'application/json',temperature:0.2}})
   }).then(function(r){
-   if(r.status===404||r.status===400){var e=new Error('retry');e.retry=true;throw e;}
-   if(!r.ok)return r.text().then(function(x){throw new Error('HTTP '+r.status+' '+x.slice(0,110));});
-   return r.json();
+   return r.text().then(function(t){
+    if(r.status===404){D.ai.model='';save();throw new Error('__retry__');}
+    if(!r.ok)throw new Error(apiErr(r.status,t));
+    return JSON.parse(t);});
   }).then(function(j){
-   var txt=((((j.candidates||[])[0]||{}).content||{}).parts||[{}])[0].text||'';
-   try{cb(JSON.parse(txt),null);}catch(e){cb(null,'The AI replied in a shape I could not read.');}
+   var c=(j.candidates||[])[0]||{};
+   var txt=(((c.content||{}).parts||[{}])[0]||{}).text||'';
+   if(!txt&&c.finishReason)throw new Error('The AI stopped early ('+c.finishReason+').');
+   try{cb(JSON.parse(txt),null);}
+   catch(e){cb(null,'The AI replied in a shape the app could not read.');}
   }).catch(function(e){
-   if(e&&e.retry)return tryOne();
-   var m=(e&&e.message)||'';
-   if(/failed to fetch|networkerror|load failed/i.test(m))
-    cb(null,blocked()?'This page is not allowed to call Google from where it is hosted. '+
-      'Your key is fine \u2014 see the note under AI key in Setup.'
-     :'No internet, or the connection was refused.');
-   else cb(null,m||'Could not reach the AI.');
+   if(e&&e.message==='__retry__')return gemini(parts,cb);
+   cb(null,netErr(e));
   });
- })();
+ });
 }
-function aiText(text){
+function aiText(text,mealHint){
  if(!hasKey()){toast('Did not understand that. Add your AI key in Setup for free wording.');return;}
- toast('Thinking…');
+ toast('Reading that…');
  gemini([{text:
   'You read a short note from an Indian user, written in Tamil, English or both. Decide what it records and '+
   'return ONLY JSON.\n'+
@@ -1014,12 +1132,20 @@ function aiText(text){
   'Body weight: {"kind":"weight","value":N}\n'+
   'Water: {"kind":"water","ml":N}\n'+
   'None of these: {"kind":"none"}\n'+
-  'Use realistic South Indian portion calories. Money amounts are Indian rupees.\n\nNote: '+text}],
+  'The user is in Chennai. Food is usually South Indian home or hotel food; use realistic portion '+
+  'calories and protein for the quantity stated, one entry per dish. Money amounts are Indian rupees. '+
+  'Tamil written in English letters is common (muuta/muttai = egg, saadam = rice, kuzhambu = gravy, '+
+  'poriyal = dry vegetable, varuval = fry).'+
+  (mealHint?' Treat it as the '+mealHint+' meal unless the note says otherwise.':'')+
+  '\n\nNote: '+text}],
   function(j,err){
-   if(err||!j)return toast(err==='no-key'?'Add your AI key in Setup.':('Could not read that — '+err));
+   if(err||!j)return toast(err==='no-key'?'Add your AI key in Setup.':err);
+   _mealHint=mealHint||null;
    applyAi(j,null);
+   _mealHint=null;
   });
 }
+var _mealHint=null;
 function applyAi(j,thumb){
  var d=today();
  if(j.kind==='spend'&&j.amount){
@@ -1033,12 +1159,17 @@ function applyAi(j,thumb){
   save();draw();return toast(R(j.amount)+' from '+src(j.source).name+' added');
  }
  if(j.kind==='food'&&(j.items||[]).length){
-  var meal=MEALS.some(function(m){return m.id===j.meal;})?j.meal:mealNow();
+  var meal=MEALS.some(function(m){return m.id===j.meal;})?j.meal:(_mealHint||mealNow());
   var tot=0;
   j.items.forEach(function(it){
    var k=Number(it.kcal)||0;tot+=k;
    addFood(d,meal,it.name||'Food',Number(it.qty)||1,it.unit||'serving',k,thumb,Number(it.protein_g)||0);thumb=null;});
-  draw();return toast(Math.round(tot)+' kcal added to '+meal);
+  draw();
+  var nm=j.items.map(function(it){
+   var q=Number(it.qty)||1;
+   return (q!==1?q+' ':'')+String(it.name||'').toLowerCase();});
+  return toast(nm.join(', ')+' → '+Math.round(tot)+' kcal, '+
+   Math.round(j.items.reduce(function(x,it){return x+(Number(it.protein_g)||0);},0))+'g protein');
  }
  if(j.kind==='activity'&&j.value){
   var kind=j.what==='steps'?'steps':(METS[j.what]?j.what:'walk');
@@ -1093,7 +1224,8 @@ function photoFlow(full,thumb){
  gemini([
   {text:'You estimate calories from a photo of a meal, usually South Indian home or restaurant food. '+
    'Identify each item, estimate a realistic portion (count of idli, dosa or chapati; cups of rice; ml for a cup '+
-   'or glass) and its calories. Return ONLY JSON: '+
+   'or glass) and its calories and protein. In "note", say in one short line what is on the plate. '+
+   'Return ONLY JSON: '+
    '{"items":[{"name":"...","qty":N,"unit":"...","kcal":N,"protein_g":N}],"total":N,"confidence":"high|medium|low","note":"one short line"}. '+
    'Be realistic, not generous. If the photo is not food return {"items":[],"total":0,"confidence":"low","note":"not food"}.'},
   {inline_data:{mime_type:'image/jpeg',data:full.split(',')[1]}}
@@ -1281,9 +1413,10 @@ function shoot(){pendingMeal=mealNow();document.getElementById('cam').click();}
 function runQuick(){
  var el=document.getElementById('qq');if(!el)return;
  var t=el.value.trim();if(!t)return;
- el.value='';
+ el.value='';qTick();
  var r=handle(t);
- if(r){draw();toast(r);}else aiText(t);
+ if(r){draw();toast(r);}
+ else aiText(t,MODE==='health'?mealNow():null);
 }
 
 /* ================= FINANCE VIEWS ================= */
@@ -1299,7 +1432,7 @@ function snoozeDue(id){D.answered[today()+':'+id]=1;save();draw();}
 
 function finHome(){
  var free=liquid()-dueLeft(),st=outDay(today()),b=D.settings.budget;
- var h='<div class="wrap">'+header(monthName())+installBanner()+quickbox('spent 50 tea · earned 300 rapido · petrol 200');
+ var h='<div class="wrap">'+header(monthName())+installBanner()+backupNag()+quickbox('spent 50 tea · earned 300 rapido · petrol 200');
 
  pendingDues().slice(0,1).forEach(function(p){
   h+='<div class="ask"><div class="q">Did you pay <b>'+esc(p.name)+'</b> — '+R(p.amount)+'?'+
@@ -2023,7 +2156,7 @@ function addFoodText(meal){
  var t=(document.getElementById('fq')||{}).value||'';
  var foods=parseFoodText(t);
  if(!foods.length){
-  if(hasKey()){closeSheet();aiText(t+' (eaten at '+meal+')');return;}
+  if(hasKey()){closeSheet();aiText(t,meal);return;}
   toast('Could not match that — try "4 idli sambar", or add an AI key in Setup.');return;}
  var tot=0;
  foods.forEach(function(f){tot+=f.per*f.qty;
@@ -2347,8 +2480,11 @@ function setupPage(){
   (hasKey()?'<button class="go ghost" onclick="testKey()">Test it</button>'+
    '<button class="go red" onclick="D.ai.key=\'\';save();draw();toast(\'Key removed\')">Remove key</button>':'')+
   '</div></div>';
- h+='<div class="sec"><div class="sechead"><h2>Backup</h2></div><div class="card">'+
-  '<div style="font-size:12.5px;color:var(--mut)">Everything lives in this browser. Clearing browsing data wipes it.</div>'+
+ h+='<div class="sec"><div class="sechead"><h2>Backup</h2><span class="more" id="stormode">…</span></div>'+
+  '<div class="card">'+
+  '<div style="font-size:12.5px;color:var(--mut);line-height:1.5">Everything lives on this phone. '+
+  (D.settings.backedUp?'Last backup '+(backupAge()===0?'today':backupAge()+' days ago')+'.'
+                      :'<b>You have not taken a backup yet.</b>')+'</div>'+
   '<button class="go" onclick="exportData()">Copy my data</button>'+
   '<button class="go ghost" onclick="importData()">Restore a backup</button>'+
   '<button class="go ghost" onclick="exportCsv()">Export CSV</button>'+
@@ -2361,9 +2497,14 @@ function saveKey(){
  D.ai.key=v.trim();save();draw();toast('Key saved on this device only');
 }
 function testKey(){
+ D.ai.model='';save();
  toast('Testing…');
  gemini([{text:'Reply with exactly {"ok":true}'}],function(j,err){
-  toast(err?('Not working: '+err):(j&&j.ok?'Key works.':'Key answered, but oddly.'));});
+  if(err)return openSheet('<div class="grab"></div><h3>Not working</h3>'+
+   '<div class="ban warn" style="margin-top:12px"><span class="ic">!</span><div>'+esc(err)+'</div></div>'+
+   '<button class="go ghost" onclick="closeSheet()">Close</button>');
+  toast(j&&j.ok?('Working — using '+D.ai.model):'The key answered, but oddly.');
+ });
 }
 function editAccount(id){
  var a=acc(id);
@@ -2444,7 +2585,22 @@ function exportData(){
   '<button class="go ghost" onclick="closeSheet()">Close</button>');
 }
 function copyOut(b){var ta=document.querySelector('#sbox textarea');ta.select();
- try{document.execCommand('copy');b.textContent='Copied';}catch(e){b.textContent='Select and copy manually';}}
+ try{document.execCommand('copy');b.textContent='Copied';
+  D.settings.backedUp=today();save();}catch(e){b.textContent='Select and copy manually';}}
+function backupAge(){
+ if(!D.settings.backedUp)return 999;
+ return Math.round((new Date(today())-new Date(D.settings.backedUp))/864e5);
+}
+function backupNag(){
+ if(!D.settings.ready)return '';
+ var n=backupAge();
+ if(n<10)return '';
+ return '<div class="ban amber"><span class="ic">⚑</span><div>'+
+  (n>900?'<b>You have never taken a backup.</b>':'<b>Last backup was '+n+' days ago.</b>')+
+  ' If this phone clears its storage, everything here goes with it. '+
+  '<span style="text-decoration:underline" onclick="go(\'setup\');setTimeout(exportData,250)">'+
+  'Take one now</span>.</div></div>';
+}
 function importData(){
  openSheet('<div class="grab"></div><h3>Restore</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">This replaces everything here.</div>'+
@@ -2529,6 +2685,18 @@ function doInstall(){
   INSTALL=null;draw();
   if(r&&r.outcome==='accepted')toast('Installed \u2014 open it from your home screen.');});
 }
+keepStorage();
+rescue();
+setInterval(function(){
+ var el=document.getElementById('stormode');
+ if(!el)return;
+ if(navigator.storage&&navigator.storage.persisted)
+  navigator.storage.persisted().then(function(ok){
+   el.textContent=ok?'protected':'not protected';
+   el.style.color=ok?'var(--g2)':'var(--amber)';});
+ else el.textContent='';
+},1500);
+
 if('serviceWorker' in navigator&&!blocked()&&
    (location.protocol==='https:'||/^(localhost|127\.0\.0\.1)$/.test(location.hostname)))
  window.addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){});});
