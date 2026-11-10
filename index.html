@@ -268,7 +268,7 @@ var SEED={
  health:{weightStart:75,weightTarget:70,height:170,age:30,water:3000,protein:0,
          eat:0,burn:400,steps:8000,autoTarget:true},
  tx:[], paid:{}, hlog:{}, food:{}, act:{},
- settings:{budget:400,name:'',lang:'auto',heard:'',misses:0,ready:0}, ai:{key:''}, answered:{}
+ settings:{budget:400,name:'',lang:'auto',heard:'',misses:0,ready:0}, ai:{key:'',model:'',qp:0}, answered:{}
 };
 
 var CC={Food:['#C2622F','🍽'],Travel:['#3F7FA6','🛺'],Fuel:['#C98A2B','⛽'],
@@ -1053,9 +1053,14 @@ var GBASE='https://generativelanguage.googleapis.com/v1beta/';
    models it can actually use and keep the answer. */
 function pickModel(cb){
  if(D.ai.model)return cb(D.ai.model,null);
- fetch(GBASE+'models?pageSize=200',{headers:{'x-goog-api-key':D.ai.key}})
+ var first=!D.ai.qp;
+ fetch(GBASE+'models?pageSize=200'+(D.ai.qp?('&key='+encodeURIComponent(D.ai.key)):''),
+   D.ai.qp?{}:{headers:{'x-goog-api-key':D.ai.key}})
   .then(function(r){
    return r.text().then(function(t){
+    /* some keys are only accepted as a query parameter - try that once before giving up */
+    if(!r.ok&&r.status===400&&first&&/API_KEY_INVALID|not valid/i.test(t)){
+     D.ai.qp=1;save();throw new Error('__qp__');}
     if(!r.ok)throw new Error(apiErr(r.status,t));
     return JSON.parse(t);});})
   .then(function(j){
@@ -1071,13 +1076,16 @@ function pickModel(cb){
    if(!chosen)return cb(null,'The key works, but no usable model is enabled on it.');
    D.ai.model=chosen;save();cb(chosen,null);
   })
-  .catch(function(e){cb(null,netErr(e));});
+  .catch(function(e){
+   if(e&&e.message==='__qp__')return pickModel(cb);
+   cb(null,netErr(e));});
 }
 function apiErr(status,text){
  var msg='';
  try{msg=(JSON.parse(text).error||{}).message||'';}catch(e){}
  if(status===400&&/API key not valid|API_KEY_INVALID/i.test(msg))
-  return 'That key is not valid. Make a fresh one in AI Studio.';
+  return 'Google does not recognise this key. Usually the paste was cut short, or the key was '+
+   'deleted in AI Studio. Check the length shown under AI key, then make a fresh one.';
  if(status===403)
   return 'Google refused the key. Open aistudio.google.com/apikey and check it is still there, '+
    'and that the Generative Language API is on for its project.';
@@ -1097,9 +1105,12 @@ function gemini(parts,cb){
  if(!hasKey())return cb(null,'no-key');
  pickModel(function(model,err){
   if(!model)return cb(null,err);
-  fetch(GBASE+'models/'+model+':generateContent',{
+  var url=GBASE+'models/'+model+':generateContent'+(D.ai.qp?('?key='+encodeURIComponent(D.ai.key)):'');
+  var head={'Content-Type':'application/json'};
+  if(!D.ai.qp)head['x-goog-api-key']=D.ai.key;
+  fetch(url,{
    method:'POST',
-   headers:{'Content-Type':'application/json','x-goog-api-key':D.ai.key},
+   headers:head,
    body:JSON.stringify({contents:[{parts:parts}],
     generationConfig:{responseMimeType:'application/json',temperature:0.2}})
   }).then(function(r){
@@ -2475,7 +2486,14 @@ function setupPage(){
   'from a plate photo, and understanding wording the app cannot match on its own. Get a free key at '+
   '<b>aistudio.google.com</b> → Get API key, then paste it here. It is saved in this browser alone — '+
   'never type it into a chat or send it to anyone.</div>'+
-  '<input type="password" id="aik" placeholder="'+(hasKey()?'•••••• (saved)':'Paste your key')+'">'+
+  (hasKey()?'<div style="margin-top:13px;padding:11px 13px;background:#FAFAF6;border:1px solid var(--line);'+
+    'border-radius:12px;font-size:12px;color:var(--mut);line-height:1.6">'+
+    '<b style="color:var(--ink)">Saved key</b><br><span id="keyview">'+esc(keyMask())+'</span><br>'+
+    D.ai.key.length+' characters'+
+    (D.ai.key.length<30?' — <b style="color:var(--red)">that looks too short, the paste was probably cut</b>':'')+
+    (D.ai.model?'<br>model: '+esc(D.ai.model):'')+
+    ' <span style="text-decoration:underline;color:var(--ink)" onclick="showKey()">show</span></div>':'')+
+  '<input type="password" id="aik" placeholder="'+(hasKey()?'Paste a new key to replace it':'Paste your key')+'">'+
   '<button class="go" onclick="saveKey()">Save key</button>'+
   (hasKey()?'<button class="go ghost" onclick="testKey()">Test it</button>'+
    '<button class="go red" onclick="D.ai.key=\'\';save();draw();toast(\'Key removed\')">Remove key</button>':'')+
@@ -2491,10 +2509,25 @@ function setupPage(){
   '<button class="go red" onclick="wipe()">Erase everything</button></div></div>';
  return h+'<div style="height:16px"></div></div>';
 }
+function keyMask(){
+ var k=D.ai.key||'';
+ if(k.length<14)return k;
+ return k.slice(0,6)+'…'+k.slice(-4);
+}
+function showKey(){
+ var el=document.getElementById('keyview');
+ if(el)el.textContent=D.ai.key;
+ toast('Do not screenshot this.');
+}
 function saveKey(){
  var v=(document.getElementById('aik')||{}).value||'';
- if(v.trim().length<10)return toast('That does not look like a key.');
- D.ai.key=v.trim();save();draw();toast('Key saved on this device only');
+ /* phones love to add spaces, newlines and smart quotes to a paste */
+ v=v.replace(/[\s\u00A0]+/g,'').replace(/^["'\u201C\u2018]+|["'\u201D\u2019]+$/g,'');
+ if(v.length<10)return toast('That does not look like a key.');
+ if(v.length<30&&!confirm('That key is only '+v.length+' characters, which is shorter than Google\'s keys '+
+  'usually are. It may have been cut off when you copied it. Save it anyway?'))return;
+ D.ai.key=v;D.ai.model='';D.ai.qp=0;save();draw();
+ toast('Saved — now tap Test it.');
 }
 function testKey(){
  D.ai.model='';save();
