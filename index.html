@@ -260,6 +260,7 @@ var SEED={
  ],
  debts:[],
  bills:[],
+ savings:[],
  budgets:[
   {cat:'Food',limit:3000},{cat:'Travel',limit:1200},{cat:'Fuel',limit:1500},
   {cat:'Groceries',limit:800},{cat:'Health',limit:500},{cat:'Shopping',limit:500},
@@ -268,7 +269,7 @@ var SEED={
  health:{weightStart:75,weightTarget:70,height:170,age:30,water:3000,protein:0,
          eat:0,burn:400,steps:8000,autoTarget:true},
  tx:[], paid:{}, hlog:{}, food:{}, act:{},
- settings:{budget:400,name:'',lang:'auto',heard:'',misses:0,ready:0}, ai:{key:'',model:'',qp:0}, answered:{}
+ settings:{name:'',lang:'auto',heard:'',misses:0,ready:0}, ai:{key:'',model:'',qp:0}, answered:{}
 };
 
 var CC={Food:['#C2622F','🍽'],Travel:['#3F7FA6','🛺'],Fuel:['#C98A2B','⛽'],
@@ -287,8 +288,8 @@ var MEALS=[
 
 /* ----- Tamil + English food table: name, aliases, kcal, unit, default qty, protein g ----- */
 var FOODS=[
-['Idli','இட்லி,itly,idly,itli',58,'idli',2,2],
-['Dosa','தோசை,dosai,thosai,dose,dhosa',133,'dosa',1,2.7],
+['Idli','இட்லி,itly,idly,itli,idlis,iddli,idlee',58,'idli',2,2],
+['Dosa','தோசை,dosai,thosai,dose,dhosa,dosas,thosa,dhosai',133,'dosa',1,2.7],
 ['Masala dosa','மசாலா தோசை,masala dosai',300,'dosa',1,6],
 ['Rava dosa','ரவா தோசை,rava dosai',220,'dosa',1,4],
 ['Onion dosa','வெங்காய தோசை,onion dosai',200,'dosa',1,4],
@@ -296,7 +297,7 @@ var FOODS=[
 ['Appam','ஆப்பம்,aappam',120,'appam',2,2],
 ['Idiyappam','இடியாப்பம்,string hopper',85,'piece',3,1.7],
 ['Poori','பூரி,puri',105,'poori',2,2],
-['Chapati','சப்பாத்தி,chapathi,roti,ரொட்டி,phulka',104,'chapati',2,3],
+['Chapati','சப்பாத்தி,chapathi,roti,ரொட்டி,phulka,chappathi,chapatti,sapathi',104,'chapati',2,3],
 ['Parotta','பரோட்டா,porotta,paratha,barotta',250,'parotta',1,5],
 ['Kothu parotta','கொத்து பரோட்டா,kothu',450,'plate',1,16],
 ['Pongal','பொங்கல்,ven pongal',280,'cup',1,7],
@@ -318,17 +319,17 @@ var FOODS=[
 ['Fried rice','ஃப்ரைடு ரைஸ்,friedrice',400,'plate',1,8],
 ['Biryani','பிரியாணி,briyani,biriyani',550,'plate',1,14],
 ['Chicken biryani','சிக்கன் பிரியாணி,chicken briyani',650,'plate',1,28],
-['Full meals','மீல்ஸ்,meals,saapadu,சாப்பாடு,veg meals,thali',600,'plate',1,15],
+['Full meals','மீல்ஸ்,meals,saapadu,சாப்பாடு,veg meals,thali,sapadu,sapten,full meals',600,'plate',1,15],
 ['Non-veg meals','நான்வெஜ் மீல்ஸ்,non veg meals,nonveg meals',850,'plate',1,35],
 ['Noodles','நூடுல்ஸ்,noodle',350,'plate',1,8],
 ['Dal','பருப்பு,paruppu,dhal,dall',180,'cup',1,9],
-['Poriyal','பொரியல்,porial',100,'serving',1,2.5],
+['Poriyal','பொரியல்,porial,poriyel,fry,varuval',100,'serving',1,2.5],
 ['Kootu','கூட்டு',120,'serving',1,4],
 ['Avial','அவியல்',150,'serving',1,3],
 ['Egg','முட்டை,muttai,boiled egg,mutta,muuta,motta,muttah,eggs',78,'egg',1,6.3],
 ['Omelette','ஆம்லெட்,omlet,omlette',150,'omelette',1,11],
 ['Egg dosa','முட்டை தோசை,muttai dosai',200,'dosa',1,9],
-['Chicken curry','சிக்கன் கறி,chicken kulambu,chicken gravy',250,'serving',1,20],
+['Chicken curry','சிக்கன் கறி,chicken kulambu,chicken gravy,chicken kuzhambu,kozhi kari',250,'serving',1,20],
 ['Chicken 65','சிக்கன் 65,chicken65',300,'plate',1,25],
 ['Chicken fry','சிக்கன் ஃப்ரை,chicken varuval,சிக்கன் வறுவல்',280,'serving',1,26],
 ['Mutton curry','மட்டன் கறி,mutton kulambu,mutton gravy',300,'serving',1,22],
@@ -336,7 +337,7 @@ var FOODS=[
 ['Fish fry','மீன் வறுவல்,meen varuval,fishfry',200,'piece',1,20],
 ['Prawn','இறால்,eral,prawns',100,'serving',1,18],
 ['Paneer','பன்னீர்,panner',265,'serving',1,15],
-['Curd','தயிர்,thayir,yogurt,dahi',100,'cup',1,5],
+['Curd','தயிர்,thayir,yogurt,dahi,thayiru,curd rice bowl',100,'cup',1,5],
 ['Buttermilk','மோர்,moru,neer mor',40,'glass',1,2],
 ['Milk','பால்,paal,paalu',120,'glass',1,6.5],
 ['Tea','டீ,chai,சாய்,milk tea',90,'cup',1,2],
@@ -371,6 +372,44 @@ var FOODS=[
 ['Sugar','சர்க்கரை,sakkarai,sakarai',20,'tsp',1,0],
 ['Ghee','நெய்,nei,ney',45,'tsp',1,0],
 ['Oil','எண்ணெய்,ennai,ennei',40,'tsp',1,0],
+['Potato fry','உருளைகிழங்கு,potato,urulai,urula,aloo,potato poriyal,potato curry,urulai kizhangu',150,'serving',1,2],
+['Brinjal','கத்தரிக்காய்,kathirikai,kathrikai,brinjal,baingan',110,'serving',1,2],
+['Beans','பீன்ஸ்,beans poriyal,beans',90,'serving',1,3],
+['Cabbage','முட்டைகோஸ்,cabbage,muttaikose',80,'serving',1,2],
+['Carrot','கேரட்,carrot',70,'serving',1,1.5],
+['Keerai','கீரை,keerai,spinach,palak,greens',75,'serving',1,4],
+['Drumstick','முருங்கை,murungakkai,drumstick',60,'serving',1,2],
+['Ladies finger','வெண்டைக்காய்,vendakkai,okra,ladies finger,bhindi',95,'serving',1,2],
+['Mushroom','காளான்,mushroom,kaalan',90,'serving',1,3],
+['Soya','சோயா,soya,soya chunks,meal maker',150,'serving',1,13],
+['Chana','கொண்டகக்கடலை,channa,chana,chole,kondakadalai',180,'cup',1,9],
+['Rajma','ராஜ்மா,rajma',160,'cup',1,8],
+['Sundal','சுண்டல்,sundal,sundhal',140,'cup',1,7],
+['Sprouts','முளைகடலை,sprouts,mulaikattiya',120,'cup',1,8],
+['Puttu','புட்டு,puttu',180,'cup',1,4],
+['Kozhukattai','கொழுக்கட்டை,kozhukattai,modak',120,'piece',2,2],
+['Semiya','செமியா,semiya,vermicelli,sevai,idiyappam sevai',210,'cup',1,5],
+['Ragi kanji','ராகி,ragi,ragi kanji,ragi koozh,kezhvaragu',130,'cup',1,4],
+['Oats','ஓட்ஸ்,oats,oatmeal',150,'cup',1,5],
+['Corn flakes','கார்ன் ப்ளேக்ஸ்,cornflakes,corn flakes',140,'cup',1,3],
+['Pickle','ஊறுகாய்,oorugai,urugai,pickle,achar',30,'serving',1,0.3],
+['Appalam','அப்பளம்,appalam,papad,papadam',35,'piece',1,1],
+['Ghee rice','நெய் சாதம்,ghee rice,nei sadam,neychoru',320,'cup',1,5],
+['Mutton biryani','மட்டன் பிரியாணி,mutton biryani,mutton briyani',700,'plate',1,30],
+['Egg biryani','முட்டை பிரியாணி,egg biryani,egg briyani',520,'plate',1,16],
+['Crab','நண்டு,nandu,crab',110,'serving',1,16],
+['Pepper chicken','மிளகு சிக்கன்,pepper chicken,milagu chicken',270,'serving',1,24],
+['Kuzhambu','குழம்பு,kuzhambu,kulambu,gravy,vatha kuzhambu,mor kuzhambu',90,'serving',1,3],
+['Shawarma','ஷாவர்மா,shawarma,shawrma',450,'roll',1,25],
+['Pizza','பிச்சா,pizza',270,'slice',2,11],
+['Burger','பர்கர்,burger',350,'burger',1,15],
+['Sandwich','சாண்ட்விச்,sandwich',280,'sandwich',1,10],
+['Momos','மொமோஸ்,momos,momo',240,'plate',1,8],
+['French fries','ப்ரெஞ்ச் ப்ரை,french fries,fries',310,'serving',1,4],
+['Parotta salna','சால்னா,salna,salna gravy',80,'serving',1,3],
+['Dates','பேரீச்சம்,dates,pericham',23,'piece',2,0.2],
+['Nuts','நட்ஸ்,almonds,badam,cashew,mundhiri,peanuts,verkadalai,nuts',160,'handful',1,6],
+['Protein shake','ப்ரோட்டீன்,protein shake,whey',140,'scoop',1,24],
 ['Water','தண்ணீர்,thanni,thanneer',0,'glass',1,0]
 ];
 var FIDX=[];
@@ -680,6 +719,103 @@ function deleteBill(id){
  Object.keys(D.paid).forEach(function(m){delete D.paid[m][id];});
  save();closeSheet();draw();
 }
+/* ===================== SAVINGS =====================
+   A pot is tied to an account, so what is in it is simply that account's balance.
+   Putting money aside is a transfer, which keeps every other number honest. */
+function pots(){return D.savings||[];}
+function potAcct(p){return acc(p.acct);}
+function potSaved(p){return balance(p.acct);}
+function potTotal(){return pots().reduce(function(x,p){return x+potSaved(p);},0);}
+function dailyTarget(){return pots().reduce(function(x,p){return x+(p.daily||0);},0);}
+function intoAcct(id,d){
+ return D.tx.filter(function(t){return t.type==='move'&&t.to===id&&(!d||t.date===d);})
+  .reduce(function(x,t){return x+t.amount;},0);
+}
+function savedToday(p){return intoAcct(p.acct,today());}
+function potMonths(p){
+ if(!p.target||!p.daily)return null;
+ var left=p.target-potSaved(p);
+ if(left<=0)return 0;
+ return Math.ceil(left/(p.daily*30));
+}
+function potWhen(p){
+ var m=potMonths(p);
+ if(m===null)return '';
+ if(m===0)return 'target reached';
+ var e=new Date();e.setMonth(e.getMonth()+m);
+ return 'on track for '+e.toLocaleDateString('en-IN',{month:'short',year:'numeric'});
+}
+function addSaving(potId,amount,from){
+ var p=pots().filter(function(x){return x.id===potId;})[0];
+ if(!p||!amount)return;
+ if(from===p.acct)return toast('Pick a different account to move it from.');
+ D.tx.push({id:nid(),date:today(),amount:amount,type:'move',from:from,to:p.acct,
+  note:'Saved \u2014 '+p.name});
+ save();draw();
+ toast(R(amount)+' into '+p.name+'. '+R(potSaved(p))+' put aside so far.');
+}
+function savePrompt(potId){
+ var p=pots().filter(function(x){return x.id===potId;})[0];if(!p)return;
+ var others=D.accounts.filter(function(a){return a.id!==p.acct;});
+ openSheet('<div class="grab"></div><h3>'+esc(p.name)+'</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
+   R(potSaved(p))+' put aside'+(p.target?' of '+R(p.target):'')+'.</div>'+
+  '<div class="mic" style="margin-top:16px">How much</div>'+
+  '<input id="sv_amt" type="number" inputmode="decimal" value="'+(p.daily||'')+'">'+
+  '<div class="mic" style="margin-top:16px">Moved out of</div>'+
+  '<select id="sv_from">'+others.map(function(a){
+   return '<option value="'+a.id+'">'+esc(a.name)+' \u2014 '+R(balance(a.id))+'</option>';}).join('')+'</select>'+
+  '<button class="go" onclick="doSave(\''+potId+'\')">Put it aside</button>'+
+  '<button class="go ghost" onclick="editPot(\''+potId+'\')">Change this pot</button>'+
+  '<button class="go ghost" onclick="closeSheet()">Cancel</button>');
+}
+function doSave(potId){
+ var amt=Number((document.getElementById('sv_amt')||{}).value)||0;
+ if(!amt)return toast('How much?');
+ var from=(document.getElementById('sv_from')||{}).value;
+ closeSheet();addSaving(potId,amt,from);
+}
+function potSheet(pot){
+ var p=pot||{name:'',acct:(D.accounts[1]||D.accounts[0]).id,daily:0,target:0};
+ openSheet('<div class="grab"></div><h3>'+(pot?'Edit pot':'New savings pot')+'</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
+  'Each pot sits in one of your accounts, so what is in it is simply that account\'s balance.</div>'+
+  '<div class="mic" style="margin-top:16px">Name</div>'+
+  '<input id="p_nm" value="'+esc(p.name)+'" placeholder="Emergency fund">'+
+  '<div class="mic" style="margin-top:16px">Which account holds it</div>'+
+  '<select id="p_acct">'+D.accounts.map(function(a){
+   return '<option value="'+a.id+'"'+(a.id===p.acct?' selected':'')+'>'+esc(a.name)+'</option>';}).join('')+
+  '</select>'+
+  '<div class="mic" style="margin-top:16px">Put aside each day</div>'+
+  '<input id="p_daily" type="number" inputmode="decimal" value="'+(p.daily||'')+'" placeholder="50">'+
+  '<div class="mic" style="margin-top:16px">Target (optional)</div>'+
+  '<input id="p_target" type="number" inputmode="decimal" value="'+(p.target||'')+'" placeholder="50000">'+
+  '<button class="go" onclick="savePot('+(pot?'\''+pot.id+'\'':'null')+')">Save</button>'+
+  (pot?'<button class="go red" onclick="deletePot(\''+pot.id+'\')">Remove this pot</button>':'')+
+  '<button class="go ghost" onclick="closeSheet()">Cancel</button>');
+}
+function editPot(id){potSheet(pots().filter(function(x){return x.id===id;})[0]);}
+function savePot(id){
+ function v(k){return Number((document.getElementById(k)||{}).value)||0;}
+ var nm=((document.getElementById('p_nm')||{}).value||'').trim();
+ if(!nm)return toast('Give the pot a name.');
+ var rec={name:nm,acct:(document.getElementById('p_acct')||{}).value,
+  daily:v('p_daily'),target:v('p_target')};
+ if(id){
+  var p=pots().filter(function(x){return x.id===id;})[0];
+  p.name=rec.name;p.acct=rec.acct;p.daily=rec.daily;p.target=rec.target;
+ }else{
+  rec.id=nid();D.savings.push(rec);
+ }
+ save();closeSheet();draw();toast(nm+' saved.');
+}
+function deletePot(id){
+ var p=pots().filter(function(x){return x.id===id;})[0];if(!p)return;
+ if(!confirm('Remove '+p.name+'? The money stays in '+potAcct(p).name+' \u2014 only the goal goes.'))return;
+ D.savings=pots().filter(function(x){return x.id!==id;});
+ save();closeSheet();draw();
+}
+
 function payMonth(id){
  var d=D.debts.filter(function(x){return x.id===id;})[0];if(!d||d.closed)return;
  if(isPaid(id))return toast('This month is already ticked off.');
@@ -1291,7 +1427,7 @@ function savePhoto(){
 
 /* ================= NAV ================= */
 var NAVS={
- finance:[['home','⌂','Home'],['report','◴','Report'],['debt','◆','Debt'],['setup','⚙','Setup']],
+ finance:[['home','⌂','Home'],['report','◴','Report'],['debt','◆','Debt'],['save','◎','Save']],
  health: [['home','♥','Today'],['food','🍽','Food'],['move','🚶','Move'],['hreport','◴','Report']]
 };
 function paintNav(){
@@ -1391,7 +1527,8 @@ function draw(){
  if(!D.settings.ready){chrome(false);document.getElementById('app').innerHTML=welcome();return;}
  chrome(true);
  document.getElementById('app').innerHTML = MODE==='finance'
-  ? (TAB==='report'?finReport():TAB==='debt'?debtPage():TAB==='setup'?setupPage():finHome())
+  ? (TAB==='report'?finReport():TAB==='debt'?debtPage():TAB==='save'?savePage():
+     TAB==='setup'?setupPage():finHome())
   : (TAB==='food'?foodPage():TAB==='move'?movePage():TAB==='hreport'?healthReport():healthHome());
 }
 function header(sub){
@@ -1442,7 +1579,7 @@ function answerDue(id,yes){if(yes)togglePaid(id,true);else{D.answered[today()+':
 function snoozeDue(id){D.answered[today()+':'+id]=1;save();draw();}
 
 function finHome(){
- var free=liquid()-dueLeft(),st=outDay(today()),b=D.settings.budget;
+ var free=liquid()-dueLeft();
  var h='<div class="wrap">'+header(monthName())+installBanner()+backupNag()+quickbox('spent 50 tea · earned 300 rapido · petrol 200');
 
  pendingDues().slice(0,1).forEach(function(p){
@@ -1468,12 +1605,21 @@ function finHome(){
   '<div class="card"><div class="mic">▲ Spent</div><div class="v red">'+R(sum(txIn('month','out')))+'</div>'+
    '<div style="font-size:11px;color:var(--mut);margin-top:4px">this month</div></div></div></div>';
 
- h+='<div class="sec"><div class="sechead"><h2>Today</h2><span class="more">'+R(st)+' of '+R(b)+'</span></div>'+
-  '<div class="card"><div class="bar"><i style="width:'+Math.min(100,st/Math.max(1,b)*100)+'%;background:'+
-   (st>b?'var(--red)':'linear-gradient(90deg,var(--g3),var(--g1))')+'"></i></div>'+
-  '<div style="font-size:12.5px;color:var(--mut);margin-top:9px">'+
-   (st>b?R(st-b)+' over today':R(b-st)+' left today')+
-   (inDay(today())?' · '+R(inDay(today()))+' came in':'')+'</div></div></div>';
+ if(pots().length){
+  var dt=dailyTarget(),sgot=pots().reduce(function(x,p){return x+savedToday(p);},0);
+  h+='<div class="sec"><div class="sechead"><h2>Savings</h2>'+
+   '<span class="more" onclick="go(\'save\')">All pots \u203A</span></div>'+
+   '<div class="card"><div style="display:flex;align-items:baseline">'+
+    '<div><div class="mic">Put aside</div>'+
+     '<div style="font-size:25px;font-weight:800;margin-top:4px;letter-spacing:-.03em">'+R(potTotal())+'</div></div>'+
+    (dt?'<div style="margin-left:auto;text-align:right"><div class="mic">Today</div>'+
+     '<div style="font-size:15px;font-weight:700;margin-top:5px;color:'+
+      (sgot>=dt?'var(--g2)':'var(--amber)')+'">'+R(sgot)+' of '+R(dt)+'</div></div>':'')+
+    '</div>'+
+    (dt?'<div class="bar" style="margin-top:11px"><i style="width:'+Math.min(100,sgot/dt*100)+
+     '%;background:linear-gradient(90deg,var(--g3),var(--g1))"></i></div>':'')+
+   '</div></div>';
+ }
 
  var g=gigNet('month');
  if(g.earn){
@@ -1493,7 +1639,7 @@ function finHome(){
   '<div class="strow">'+
    strkCard(TESTS.money,'days logged','\uD83D\uDD25')+
    strkCard(TESTS.income,'earning days','\uD83D\uDCB0')+
-   strkCard(TESTS.budget,'under budget','\uD83C\uDFAF')+
+   strkCard(TESTS.saved,'days saved','\uD83C\uDFAF')+
   '</div>'+strkNudge(TESTS.money,'logging','add one entry')+
   (tIn&&diff>0?'<div class="ban"><span class="ic">\u2191</span><div>You have brought in <b>'+R(diff)+
     ' more</b> than yesterday'+(yIn?' ('+R(yIn)+')':'')+'. Beat it again tomorrow.</div></div>'
@@ -1560,11 +1706,12 @@ function spendingView(){
  h+='<div class="leg">'+cats.map(function(c){
   return '<div><span class="dot" style="background:'+col(c.name)+'"></span>'+esc(c.name)+
    '<b>'+Math.round(c.value/tot*100)+'%</b></div>';}).join('')+'</div>';
- var b=D.settings.budget*spanDays();
- if(b>0)h+= tot<=b
-  ? '<div class="ban"><span class="ic">🌿</span><div><b>You\'re '+Math.round((b-tot)/b*100)+
-    '% under budget.</b><br>'+R(b-tot)+' of your '+R(b)+' allowance is still unspent.</div></div>'
-  : '<div class="ban warn"><span class="ic">!</span><div><b>'+R(tot-b)+' over.</b><br>Budget for this period was '+R(b)+'.</div></div>';
+ var earned=sum(txIn(SPAN,'in'));
+ if(earned||tot)h+= earned>=tot
+  ? '<div class="ban"><span class="ic">\uD83C\uDF3F</span><div>You brought in <b>'+R(earned)+'</b> and spent '+
+    R(tot)+'. <b>'+R(earned-tot)+' stayed with you</b> over '+spanName()+'.</div></div>'
+  : '<div class="ban warn"><span class="ic">!</span><div>You spent <b>'+R(tot-earned)+' more than you earned</b> '+
+    'over '+spanName()+' \u2014 '+R(tot)+' out against '+R(earned)+' in.</div></div>';
  h+='</div><div class="sec"><div class="sechead"><h2>Spending trend</h2></div>'+trendBars()+'</div>';
  h+='<div class="sec"><div class="list">'+cats.map(function(c){
   var p=Math.round(c.value/tot*100),n=list.filter(function(t){return t.cat===c.name;}).length;
@@ -1671,6 +1818,92 @@ function trendBars(){
      new Date(x.d+'T12:00').toLocaleDateString('en-IN',{weekday:'narrow'})+'</div>':'')+'</div>';
   }).join('')+'</div></div>';
 }
+function savePage(){
+ var h='<div class="wrap">'+header('Money you are putting aside');
+ var list=pots(),dt=dailyTarget();
+ var sgot=list.reduce(function(x,p){return x+savedToday(p);},0);
+
+ h+='<div class="sec"><div class="card" style="background:var(--g1);color:#fff;border-color:transparent">'+
+  '<div class="mic" style="color:rgba(255,255,255,.6)">Put aside so far</div>'+
+  '<div class="big" style="margin-top:5px">'+R(potTotal())+'</div>'+
+  (dt?'<div class="bar" style="background:rgba(255,255,255,.18);margin-top:13px">'+
+   '<i style="width:'+Math.min(100,sgot/dt*100)+'%;background:var(--g4)"></i></div>'+
+   '<div style="font-size:12.5px;opacity:.78;margin-top:9px">'+R(sgot)+' of '+R(dt)+
+   ' today \u00B7 '+R(dt*30)+' a month if you keep it up</div>'
+  :'<div style="font-size:12.5px;opacity:.78;margin-top:7px">Put a daily amount on a pot and the app '+
+   'will ask you for it.</div>')+'</div></div>';
+
+ if(!list.length){
+  h+='<div class="ban plain"><span class="ic">\u25CE</span><div>No pots yet. A pot is a goal attached to '+
+   'one of your accounts \u2014 an emergency fund in one, money for later in another. Give it a daily '+
+   'amount and the app asks you for it every day and counts the streak.</div></div>'+
+   '<button class="go" onclick="potSheet(null)">Create the first pot</button>';
+  return h+'<div style="height:16px"></div></div>';
+ }
+
+ list.forEach(function(p){
+  if(!p.daily||savedToday(p)>=p.daily||D.answered[today()+':s'+p.id])return;
+  h+='<div class="ask"><div class="q">Put <b>'+R(p.daily)+'</b> into '+esc(p.name)+' today?'+
+   '<br><span style="opacity:.75;font-size:12.5px">'+R(potSaved(p))+' in there so far.</span></div>'+
+   '<div class="btns">'+
+   '<button class="yes" onclick="quickSave(\''+p.id+'\')">Yes, done</button>'+
+   '<button class="no" onclick="savePrompt(\''+p.id+'\')">Another amount</button>'+
+   '<button class="later" onclick="snoozePot(\''+p.id+'\')">Later</button></div></div>';
+ });
+
+ h+='<div class="sec"><div class="sechead"><h2>Your pots</h2>'+
+  '<span class="more" onclick="potSheet(null)">+ New pot</span></div>';
+ list.forEach(function(p){
+  var got=potSaved(p),pct=p.target?Math.min(100,Math.round(got/p.target*100)):0;
+  var tdy=savedToday(p),done=p.daily&&tdy>=p.daily;
+  h+='<div class="day"><div class="dh" onclick="editPot(\''+p.id+'\')">'+
+   '<b>'+esc(p.name)+'</b><i>in '+esc(potAcct(p).name)+
+    (p.daily?' \u00B7 '+R(p.daily)+' a day':'')+'</i>'+
+   '<div class="t">'+R(got)+'</div></div>'+
+   '<div class="db" style="padding:13px 15px">'+
+   (p.target?'<div class="bar" style="margin-top:0">'+
+     '<i style="width:'+pct+'%;background:var(--g2)"></i></div>'+
+     '<div style="display:flex;margin-top:9px;font-size:11.5px;color:var(--mut)">'+
+      '<span>'+pct+'% of '+R(p.target)+'</span>'+
+      '<span style="margin-left:auto">'+esc(potWhen(p))+'</span></div>':'')+
+   '<div style="display:flex;gap:8px;margin-top:12px">'+
+    '<button class="chip" style="flex:1;text-align:center;'+
+     (done?'background:var(--mint);border-color:#D2E8DC;color:var(--g2)':'')+'" '+
+     'onclick="quickSave(\''+p.id+'\')">'+
+     (done?'Done today \u2713 '+R(tdy):'Put in '+R(p.daily||0))+'</button>'+
+    '<button class="chip" style="flex:1;text-align:center" onclick="savePrompt(\''+p.id+'\')">'+
+     'Another amount</button></div></div></div>';
+ });
+ h+='</div>';
+
+ var moves=D.tx.filter(function(t){
+  return t.type==='move'&&list.some(function(p){return p.acct===t.to;});}).slice(-10).reverse();
+ if(moves.length)
+  h+='<div class="sec"><div class="sechead"><h2>Lately</h2></div><div class="list">'+
+   moves.map(function(t){
+    return '<div class="row" onclick="editTx(\''+t.id+'\')">'+
+     '<div class="tile" style="background:var(--mint);color:var(--g2)">\u25CE</div>'+
+     '<div class="nm"><b>'+esc(t.note||'Saved')+'</b><i>from '+esc(acc(t.from).name)+' \u00B7 '+
+      dshort(t.date)+'</i></div><div class="amt grn">+'+R(t.amount)+'</div></div>';}).join('')+
+   '</div></div>';
+
+ h+='<div class="sec"><div class="strow">'+
+   strkCard(TESTS.saved,'days saved','\uD83C\uDFAF')+
+   strkCard(TESTS.money,'days logged','\uD83D\uDD25')+
+   strkCard(TESTS.income,'earning days','\uD83D\uDCB0')+
+  '</div>'+strkNudge(TESTS.saved,'saving','put something aside')+'</div>';
+ return h+'<div style="height:16px"></div></div>';
+}
+function snoozePot(id){D.answered[today()+':s'+id]=1;save();draw();}
+function quickSave(potId){
+ var p=pots().filter(function(x){return x.id===potId;})[0];if(!p)return;
+ if(!p.daily)return savePrompt(potId);
+ var from=D.accounts.filter(function(a){return a.id!==p.acct;})
+  .sort(function(x,y){return balance(y.id)-balance(x.id);})[0];
+ if(!from)return toast('Add another account first \u2014 the money has to come from somewhere.');
+ addSaving(potId,p.daily,from.id);
+}
+
 function debtPage(){
  var td=new Date().getDate(),tot=totalDebt();
  var live=liveDebts(),hold=holdingDebts(),done=clearedDebts();
@@ -1864,7 +2097,7 @@ var TESTS={
  onPlan: function(d){return foodOf(d).length>0&&eaten(d)<=eatTarget();},
  moved:  function(d){return actOf(d).length>0;},
  money:  function(d){return D.tx.some(function(t){return t.date===d;});},
- budget: function(d){return D.tx.some(function(t){return t.date===d;})&&outDay(d)<=D.settings.budget;},
+ saved:  function(d){return pots().some(function(p){return intoAcct(p.acct,d)>0;});},
  income: function(d){return inDay(d)>0;}
 };
 function strkCard(test,label,icon){
@@ -1921,12 +2154,15 @@ function calendar(){
    '<span style="margin-left:auto">tap a day</span></div></div>';
 }
 function dayReport(d){
+ openSheet('<div class="grab"></div><h3>'+dshort(d)+'</h3>'+dayBody(d)+
+  '<button class="go" onclick="closeSheet()">Close</button>');
+}
+function dayBody(d,inline){
  var f=foodOf(d),a=actOf(d),hl=D.hlog[d]||{};
  var ate=eaten(d),burn=burned(d),pro=protein(d),target=eatTarget(),pt=proteinTarget(),net=ate-burn;
  if(!f.length&&!a.length&&!hl.weight&&!hl.water)
-  return openSheet('<div class="grab"></div><h3>'+dshort(d)+'</h3>'+
-   '<div class="ban plain"><span class="ic">\u25CB</span><div>Nothing was logged on this day.</div></div>'+
-   '<button class="go ghost" onclick="closeSheet()">Close</button>');
+  return '<div class="ban plain"><span class="ic">\u25CB</span><div>Nothing logged'+
+   (inline?' today yet. Type what you ate in the box on the Today screen.':' on this day.')+'</div></div>';
 
  var verdict = !f.length ? 'Only movement was logged this day.'
   : net<=target-400 ? 'A strong day \u2014 well inside the target.'
@@ -1965,8 +2201,7 @@ function dayReport(d){
  var slices=MEALS.filter(function(m){return eaten(d,m.id);})
   .map(function(m,i){return {value:eaten(d,m.id),color:SHADES[i%8]};});
 
- openSheet('<div class="grab"></div><h3>'+dshort(d)+'</h3>'+
-  '<div style="font-size:12.5px;color:var(--mut);margin-top:3px">'+verdict+'</div>'+
+ return '<div style="font-size:12.5px;color:var(--mut);margin-top:3px">'+verdict+'</div>'+
   (slices.length?'<div style="margin-top:13px">'+
    adonut(slices,ate,'Eaten',N(ate)+' kcal',pro+'g protein')+'</div>':'')+
   '<div class="macro">'+
@@ -1992,8 +2227,7 @@ function dayReport(d){
    (hl.weight?'<div><div class="mic">Weight</div><b>'+hl.weight+'</b>'+
      '<div style="font-size:10px;color:var(--mut)">kg</div></div>':'')+
    (hl.water?'<div><div class="mic">Water</div><b>'+(hl.water/1000).toFixed(1)+'</b>'+
-     '<div style="font-size:10px;color:var(--mut)">litres</div></div>':'')+'</div>':'')+
-  '<button class="go" onclick="closeSheet()">Close</button>');
+     '<div style="font-size:10px;color:var(--mut)">litres</div></div>':'')+'</div>':'');
 }
 
 /* ================= HEALTH VIEWS ================= */
@@ -2292,6 +2526,10 @@ function healthReport(){
  h+='<div class="sec"><div class="sechead"><h2>Your month</h2>'+
   '<span class="more">tap a day for its full report</span></div>'+calendar()+'</div>';
 
+ if(SPAN==='day')
+  h+='<div class="sec"><div class="sechead"><h2>Everything today</h2>'+
+   '<span class="more">'+dshort(today())+'</span></div>'+dayBody(today(),1)+'</div>';
+
  if(!logged.length)
   return h+'<div class="ban plain" style="margin-top:18px"><span class="ic">\u25CB</span><div>'+
    'Nothing logged in this period yet. Type <b>4 idli sambar</b> on the Today screen and these reports '+
@@ -2394,6 +2632,7 @@ function healthReport(){
     moved<0?'Up '+(-moved).toFixed(1)+' kg over this period.':'Flat over this period.')+'</div></div></div>';
  }
 
+ if(SPAN==='day')return h+'<div style="height:16px"></div></div>';
  h+='<div class="sec"><div class="sechead"><h2>Day by day</h2><span class="more">tap for the full day</span></div>';
  var any=false;
  days.forEach(function(d){
@@ -2467,9 +2706,6 @@ function setupPage(){
    return '<button class="chip'+(D.settings.lang===x[0]?' on':'')+'" onclick="setLang(\''+x[0]+'\')">'+
     x[1]+'</button>';}).join('')+'</div></div></div>';
 
- h+='<div class="sec"><div class="sechead"><h2>Daily budget</h2></div><div class="card">'+
-  '<input type="number" value="'+D.settings.budget+'" onchange="D.settings.budget=Number(this.value)||400;save();draw()">'+
-  '</div></div>';
  h+='<div class="sec"><div class="sechead"><h2>Category limits</h2></div><div class="list">'+
   D.budgets.map(function(b,i){
    return '<div class="row"><div class="tile" style="background:'+col(b.cat)+'1A;color:'+col(b.cat)+'">'+ico(b.cat)+'</div>'+
