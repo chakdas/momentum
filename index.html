@@ -160,6 +160,19 @@ input,select,textarea{width:100%;padding:13px 14px;border:1px solid var(--line);
 .chip{border:1px solid var(--line);background:var(--card);border-radius:11px;padding:9px 13px;font:inherit;font-size:12.5px}
 .chip.on{background:var(--g1);color:#fff;border-color:var(--g1)}
 
+.bub{max-width:84%;padding:11px 14px;border-radius:17px;font-size:13.5px;line-height:1.5;
+ margin-top:9px;white-space:pre-wrap;word-wrap:break-word}
+.bub.me{background:var(--g1);color:#fff;margin-left:auto;border-bottom-right-radius:6px}
+.bub.them{background:var(--card);border:1px solid var(--line);border-bottom-left-radius:6px;
+ box-shadow:var(--sh)}
+.bubimg{width:92px;height:92px;object-fit:cover;border-radius:11px;margin-top:7px}
+.didit{margin-top:9px;padding-top:9px;border-top:1px dashed var(--line);font-size:11.5px;
+ color:var(--g2);font-weight:600;line-height:1.7}
+.typing{display:flex;gap:4px;align-items:center;width:58px}
+.typing span{width:6px;height:6px;border-radius:50%;background:#BFC6C2;animation:blink 1.2s infinite}
+.typing span:nth-child(2){animation-delay:.18s}
+.typing span:nth-child(3){animation-delay:.36s}
+@keyframes blink{40%{opacity:.25}}
 .vo{position:fixed;inset:0;background:rgba(10,24,19,.86);z-index:70;display:none;flex-direction:column;
  align-items:center;justify-content:center;padding:28px;text-align:center;color:#fff}
 .vo.on{display:flex}
@@ -261,15 +274,10 @@ var SEED={
  debts:[],
  bills:[],
  savings:[],
- budgets:[
-  {cat:'Food',limit:3000},{cat:'Travel',limit:1200},{cat:'Fuel',limit:1500},
-  {cat:'Groceries',limit:800},{cat:'Health',limit:500},{cat:'Shopping',limit:500},
-  {cat:'Fun',limit:300},{cat:'Other',limit:500}
- ],
  health:{weightStart:75,weightTarget:70,height:170,age:30,water:3000,protein:0,
          eat:0,burn:400,steps:8000,autoTarget:true},
- tx:[], paid:{}, hlog:{}, food:{}, act:{},
- settings:{name:'',lang:'auto',heard:'',misses:0,ready:0}, ai:{key:'',model:'',qp:0}, answered:{}
+ tx:[], paid:{}, hlog:{}, food:{}, act:{}, session:null,
+ settings:{pin:'',incomeKnown:0,name:'',lang:'auto',heard:'',misses:0,ready:0}, ai:{key:'',model:'',qp:0}, answered:{}
 };
 
 var CC={Food:['#C2622F','🍽'],Travel:['#3F7FA6','🛺'],Fuel:['#C98A2B','⛽'],
@@ -456,6 +464,19 @@ function load(){
   return d;}catch(e){return clone(SEED);}
 }
 function clone(x){return JSON.parse(JSON.stringify(x));}
+/* one step of undo for whatever was just done */
+var UNDO=null;
+function mark(label){
+ try{UNDO={label:label,json:JSON.stringify(D),at:Date.now()};}catch(e){UNDO=null;}
+}
+function canUndo(){return !!(UNDO&&Date.now()-UNDO.at<10*60*1000);}
+function undo(){
+ if(!canUndo())return toast('Nothing to undo.');
+ var u=UNDO;
+ try{D=JSON.parse(u.json);}catch(e){return toast('Could not undo that.');}
+ UNDO=null;save();closeSheet();draw();
+ toast('Undone \u2014 '+u.label);
+}
 var _mirrorT=null;
 function save(){
  var json;
@@ -843,15 +864,7 @@ function gigNet(span){
  var fuel=D.tx.filter(function(t){return t.type==='out'&&t.cat==='Fuel'&&t.date>=r[0]&&t.date<=r[1];});
  return {earn:sum(earn),fuel:sum(fuel),net:sum(earn)-sum(fuel),trips:earn.length};
 }
-function budgetRows(){
- var by={};groupBy(txIn('month','out'),'cat').forEach(function(c){by[c.name]=c.value;});
- var d=new Date(),dim=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),dn=d.getDate();
- return D.budgets.map(function(b){
-  var used=by[b.cat]||0,exp=b.limit*(dn/dim);
-  return {cat:b.cat,limit:b.limit,used:used,pct:Math.round(used/b.limit*100),left:b.limit-used,
-   fast:used>exp*1.15,projected:Math.round(used/dn*dim)};
- }).sort(function(a,b){return b.pct-a.pct;});
-}
+
 
 /* ================= HEALTH MODEL ================= */
 function lastWeight(){
@@ -1167,6 +1180,7 @@ function stopListening(){
  var gb2=document.getElementById('qgo');if(gb2)gb2.classList.remove('rec');
  var t=recText.trim();recText='';
  if(!t)return;
+ if(TAB==='chat'){heardOk();chatSend(t);return;}
  if(hasKey()){heardOk();aiText(t,MODE==='health'?mealNow():null);return;}
  var r=handle(t);
  if(r){heardOk();draw();toast(r);return;}
@@ -1353,6 +1367,12 @@ function shrink(file,cb){
  img.src=url;
 }
 function photoFlow(full,thumb){
+ if(pendingMeal==='__chat__'){
+  pendingMeal=null;CHAT_PHOTO={full:full,thumb:thumb};
+  if(TAB!=='chat')go('chat');
+  chatSend('What is on this plate?');
+  return;
+ }
  var meal=pendingMeal||mealNow();pendingMeal=null;_thumb=thumb;
  if(!hasKey()){
   openSheet('<div class="grab"></div><h3>Photo saved</h3>'+
@@ -1525,10 +1545,16 @@ function saveFresh(){
 }
 function draw(){
  if(!D.settings.ready){chrome(false);document.getElementById('app').innerHTML=welcome();return;}
+ if(TAB==='chat'){chrome(true);document.getElementById('app').innerHTML=chatPage();return;}
+ if(lockNeeded()){
+  chrome(false);document.getElementById('app').innerHTML=lockScreen();
+  setTimeout(function(){var i=document.getElementById('pin_in');if(i)i.focus();},120);
+  return;
+ }
  chrome(true);
  document.getElementById('app').innerHTML = MODE==='finance'
   ? (TAB==='report'?finReport():TAB==='debt'?debtPage():TAB==='save'?savePage():
-     TAB==='setup'?setupPage():finHome())
+     TAB==='gap'?gapPage():TAB==='setup'?setupPage():finHome())
   : (TAB==='food'?foodPage():TAB==='move'?movePage():TAB==='hreport'?healthReport():healthHome());
 }
 function header(sub){
@@ -1543,8 +1569,9 @@ function header(sub){
 }
 function quickbox(ph){
  return '<div class="qbar">'+
-  '<input id="qq" placeholder="'+ph+'" oninput="qTick()" '+
+  '<input id="qq" placeholder="'+ph+'" oninput="qTick()" onfocus="maybeChat()" '+
    'onkeydown="if(event.key===\'Enter\')runQuick()">'+
+  (hasKey()?'<button class="qi" onclick="go(\'chat\')" aria-label="Assistant">\u2726</button>':'')+
   (MODE==='health'?'<button class="qi" onclick="shoot()" aria-label="Photo">📷</button>':'')+
   '<button class="qgo" id="qgo" onclick="qAct()" aria-label="Send">🎤</button></div>';
 }
@@ -1556,6 +1583,7 @@ function qAct(){
  var i=document.getElementById('qq');
  if(i&&i.value.trim())runQuick();else listen();
 }
+function maybeChat(){}
 function setLang(l){D.settings.lang=l;save();draw();}
 function shoot(){pendingMeal=mealNow();document.getElementById('cam').click();}
 function runQuick(){
@@ -1600,9 +1628,11 @@ function finHome(){
            :'Short '+R(-free)+' against '+R(dueLeft())+' still due this month')+'</div></div></div>';
 
  h+='<div class="sec"><div class="pair">'+
-  '<div class="card"><div class="mic">▼ Earned</div><div class="v grn">'+R(sum(txIn('month','in')))+'</div>'+
+  '<div class="card" onclick="SUB=\'income\';SPAN=\'month\';go(\'report\')">'+
+   '<div class="mic">▼ Earned</div><div class="v grn">'+R(sum(txIn('month','in')))+'</div>'+
    '<div style="font-size:11px;color:var(--mut);margin-top:4px">this month</div></div>'+
-  '<div class="card"><div class="mic">▲ Spent</div><div class="v red">'+R(sum(txIn('month','out')))+'</div>'+
+  '<div class="card" onclick="SUB=\'spending\';SPAN=\'month\';go(\'report\')">'+
+   '<div class="mic">▲ Spent</div><div class="v red">'+R(sum(txIn('month','out')))+'</div>'+
    '<div style="font-size:11px;color:var(--mut);margin-top:4px">this month</div></div></div></div>';
 
  if(pots().length){
@@ -1634,13 +1664,40 @@ function finHome(){
    '</div></div>';
  }
 
+ if(canUndo())
+  h+='<div class="ban plain" style="align-items:center"><span class="ic">\u21B6</span>'+
+   '<div>Just changed something by mistake?</div>'+
+   '<button class="chip" onclick="undo()">Undo</button></div>';
+
+ var ls=liveSession();
+ if(ls)
+  h+='<div class="ask" onclick="stopSessionSheet()"><div class="q">'+
+   '<b>'+esc(src(ls.src).name)+' \u2014 '+fmtMins(sessionMins())+' so far.</b>'+
+   '<br><span style="opacity:.75;font-size:12.5px">Tap when you are back to log what you made.</span>'+
+   '</div></div>';
+ else
+  h+='<button class="go ghost" style="margin-top:13px" onclick="rideSheet()">'+
+   '\uD83C\uDFCD Start a riding session</button>';
+
+ var g0=gap();
+ if(g0.income&&(g0.committed||g0.saving))
+  h+='<div class="sec"><div class="card" onclick="go(\'gap\')" style="border-color:'+
+   (g0.left<0?'#F0D5D1':'var(--line)')+'">'+
+   '<div style="display:flex;align-items:center;gap:12px">'+
+   '<div style="flex:1"><div class="mic">'+(g0.left>=0?'Left over this month':'Short this month')+'</div>'+
+   '<div style="font-size:23px;font-weight:800;margin-top:4px;letter-spacing:-.025em" class="'+
+    (g0.left>=0?'grn':'red')+'">'+(g0.left>=0?R(g0.left):'\u2212'+R(-g0.left))+'</div>'+
+   '<div style="font-size:11.5px;color:var(--mut);margin-top:5px">'+R(g0.income)+' in against '+
+    R(g0.committed+g0.saving)+' promised</div></div>'+
+   '<span style="color:var(--mut);font-size:18px">\u203A</span></div></div></div>';
+
  var yIn=inDay(dayAgo(1)),tIn=inDay(today()),diff=tIn-yIn;
  h+='<div class="sec"><div class="sechead"><h2>Streaks</h2><span class="more">last 7 days below each</span></div>'+
   '<div class="strow">'+
-   strkCard(TESTS.money,'days logged','\uD83D\uDD25')+
-   strkCard(TESTS.income,'earning days','\uD83D\uDCB0')+
-   strkCard(TESTS.saved,'days saved','\uD83C\uDFAF')+
-  '</div>'+strkNudge(TESTS.money,'logging','add one entry')+
+   strkCard(TESTS.money,'days logged','\uD83D\uDD25','money')+
+   strkCard(TESTS.income,'earning days','\uD83D\uDCB0','income')+
+   strkCard(TESTS.saved,'days saved','\uD83C\uDFAF','saved')+
+  '</div>'+strkNudge(TESTS.money,'logging','add one entry')+brokenBanner(['money','saved'])+
   (tIn&&diff>0?'<div class="ban"><span class="ic">\u2191</span><div>You have brought in <b>'+R(diff)+
     ' more</b> than yesterday'+(yIn?' ('+R(yIn)+')':'')+'. Beat it again tomorrow.</div></div>'
    :tIn&&diff<0?'<div class="ban plain"><span class="ic">\u2193</span><div>'+R(-diff)+
@@ -1689,11 +1746,13 @@ function txRow(t){
 }
 function finReport(){
  var h='<div class="wrap">'+header('Money reports');
- h+='<div class="subs">'+[['spending','Spending'],['income','Income'],['days','Day by day'],['budgets','Budgets']]
+ h+='<div class="subs">'+[['spending','Spending'],['income','Income'],['days','Day by day']]
   .map(function(s){return '<button class="'+(SUB===s[0]?'on':'')+'" onclick="SUB=\''+s[0]+'\';draw()">'+s[1]+'</button>';}).join('')+'</div>';
  h+='<div class="subs">'+[['day','Today'],['week','7 days'],['month','This month'],['30','30 days']]
   .map(function(s){return '<button class="'+(SPAN===s[0]?'on':'')+'" onclick="SPAN=\''+s[0]+'\';draw()">'+s[1]+'</button>';}).join('')+'</div>';
- h+=SUB==='income'?incomeView():SUB==='days'?daysView():SUB==='budgets'?budgetView():spendingView();
+ h+='<button class="go ghost" style="margin-top:13px" onclick="reviewSheet()">'+
+  'The whole month, looked back on \u203A</button>';
+ h+=SUB==='income'?incomeView():SUB==='days'?daysView():spendingView();
  return h+'<div style="height:16px"></div></div>';
 }
 function spanName(){return SPAN==='day'?'today':SPAN==='week'?'last 7 days':SPAN==='month'?monthName():'last 30 days';}
@@ -1733,6 +1792,18 @@ function incomeView(){
    '<div class="nm"><b>'+esc(so.name)+'</b><i>'+p+'% of income</i>'+
    '<div class="bar"><i style="width:'+p+'%;background:var(--g2)"></i></div></div>'+
    '<div class="amt grn">'+R(s.value)+'</div></div>';}).join('')+'</div>';
+ var rs=rideStats(SPAN);
+ if(rs.length)
+  h+='<div class="sec"><div class="sechead"><h2>What an hour is worth</h2>'+
+   '<span class="more">after petrol</span></div><div class="list">'+rs.map(function(x){
+    return '<div class="row"><div class="tile" style="background:var(--mint)">'+src(x.src).icon+'</div>'+
+     '<div class="nm"><b>'+esc(src(x.src).name)+'</b><i>'+fmtMins(x.mins)+' over '+x.trips+' trip'+
+      (x.trips===1?'':'s')+' \u00B7 '+R(x.net)+' kept</i></div>'+
+     '<div style="text-align:right"><div class="amt">'+R(x.perHour)+'</div>'+
+      '<div style="font-size:10px;color:var(--mut)">an hour</div></div></div>';}).join('')+'</div>'+
+   (rs.length>1?'<div class="ban plain"><span class="ic">\u2139</span><div><b>'+
+    esc(src(rs[0].src).name)+'</b> pays best per hour of the ones you logged.</div></div>':'')+
+   '</div>';
  var g=gigNet(SPAN);
  if(g.earn)h+='<div class="ban"><span class="ic">🏍</span><div>Riding brought in <b>'+R(g.earn)+
   '</b> and petrol cost '+R(g.fuel)+'. You actually kept <b>'+R(g.net)+'</b>.</div></div>';
@@ -1763,16 +1834,6 @@ function daysView(){
    '</div></div>';
  });
  return h+'</div>';
-}
-function budgetView(){
- return '<div class="sec"><div class="sechead"><h2>Budgets</h2><span class="more">'+monthName()+'</span></div>'+
-  '<div class="list">'+budgetRows().map(function(b){
-   var tone=b.used>b.limit?'var(--red)':b.fast?'var(--amber)':'var(--g2)';
-   return '<div class="row"><div class="tile" style="background:'+col(b.cat)+'1A;color:'+col(b.cat)+'">'+ico(b.cat)+'</div>'+
-    '<div class="nm"><b>'+esc(b.cat)+'</b><i>'+R(b.used)+' of '+R(b.limit)+
-    (b.used>b.limit?' · '+R(-b.left)+' over':b.fast?' · heading for '+R(b.projected):'')+'</i>'+
-    '<div class="bar"><i style="width:'+Math.min(100,b.pct)+'%;background:'+tone+'"></i></div></div>'+
-    ring(b.pct,tone)+'</div>';}).join('')+'</div></div>';
 }
 function ring(pct,tone){
  var r=16,c=2*Math.PI*r,p=Math.min(100,pct);
@@ -1817,6 +1878,119 @@ function trendBars(){
     (n<=7?'<div style="font-size:9.5px;color:var(--mut);margin-top:5px">'+
      new Date(x.d+'T12:00').toLocaleDateString('en-IN',{weekday:'narrow'})+'</div>':'')+'</div>';
   }).join('')+'</div></div>';
+}
+/* ===== where you actually stand, and which loan to kill first ===== */
+function monthlyIncome(){
+ if(D.settings.incomeKnown)return D.settings.incomeKnown;
+ var n=0,tot=0;
+ for(var i=1;i<=3;i++){
+  var d=new Date(),m;
+  d.setMonth(d.getMonth()-i);
+  m=d.getFullYear()+'-'+p2(d.getMonth()+1);
+  var got=D.tx.filter(function(t){return t.type==='in'&&t.date.slice(0,7)===m;})
+   .reduce(function(x,t){return x+t.amount;},0);
+  if(got){tot+=got;n++;}
+ }
+ if(n)return Math.round(tot/n);
+ var tm=sum(txIn('month','in'));
+ return tm||0;
+}
+function gap(){
+ var inc=monthlyIncome(),out=committed(),save2=dailyTarget()*30;
+ return {income:inc,committed:out,saving:save2,left:inc-out-save2};
+}
+function freedBy(d){return d.emi||0;}
+function payoffOrder(){
+ var live=liveDebts().filter(function(d){return d.left>0;});
+ var fast=live.slice().sort(function(a,b){
+  var am=a.emi?Math.ceil(a.left/a.emi):999, bm=b.emi?Math.ceil(b.left/b.emi):999;
+  if(am!==bm)return am-bm;
+  return a.left-b.left;});
+ var heavy=live.slice().sort(function(a,b){
+  var ar=a.left?(a.emi||0)/a.left:0, br=b.left?(b.emi||0)/b.left:0;
+  return br-ar;});
+ return {fast:fast,heavy:heavy};
+}
+function gapPage(){
+ var g=gap(),o=payoffOrder();
+ var h='<div class="wrap">'+header('Where you actually stand');
+
+ h+='<div class="sec"><div class="card" style="background:'+
+  (g.left>=0?'var(--g1)':'#7C2D26')+';color:#fff;border-color:transparent">'+
+  '<div class="mic" style="color:rgba(255,255,255,.6)">'+
+   (g.left>=0?'Left over each month':'Short each month')+'</div>'+
+  '<div class="big" style="margin-top:5px">'+(g.left>=0?R(g.left):'\u2212'+R(-g.left))+'</div>'+
+  '<div style="font-size:12.5px;opacity:.82;margin-top:9px;line-height:1.6">'+
+   R(g.income)+' comes in.<br>'+R(g.committed)+' is already promised to loans and bills.'+
+   (g.saving?'<br>'+R(g.saving)+' you have set aside to save.':'')+'</div></div></div>';
+
+ if(g.left<0)
+  h+='<div class="ban warn"><span class="ic">!</span><div>No tracker closes a gap this size. '+
+   'It closes three ways and only three: earn more, pay less each month, or stop paying something. '+
+   'The ordering below is about the middle one.</div></div>';
+
+ /* the lever that frees cash soonest */
+ if(o.fast.length){
+  var f=o.fast[0],fm=f.emi?Math.ceil(f.left/f.emi):null;
+  h+='<div class="sec"><div class="sechead"><h2>Clear this one first</h2>'+
+   '<span class="more">frees cash soonest</span></div>'+
+   '<div class="card" onclick="debtDetail(\''+f.id+'\')">'+
+   '<div style="display:flex;align-items:baseline"><div><b style="font-size:16px">'+esc(f.name)+'</b>'+
+   '<div style="font-size:12px;color:var(--mut);margin-top:4px">'+R(f.left)+' left'+
+   (fm?' \u00B7 '+fm+' payment'+(fm===1?'':'s')+' to go':'')+'</div></div>'+
+   '<div style="margin-left:auto;text-align:right"><div class="mic">Frees</div>'+
+   '<div class="grn" style="font-size:19px;font-weight:800;margin-top:3px">'+R(freedBy(f))+'</div>'+
+   '<div style="font-size:10px;color:var(--mut)">a month</div></div></div>'+
+   (fm?'<div class="ban" style="margin-top:12px"><span class="ic">\u25F7</span><div>'+
+    'Put '+R(f.left)+' against it and '+R(freedBy(f))+' a month is yours again from next month. '+
+    'Left alone it finishes in '+fm+' month'+(fm===1?'':'s')+' anyway.</div></div>':'')+
+   '</div></div>';
+ }
+
+ if(o.fast.length>1){
+  h+='<div class="sec"><div class="sechead"><h2>The order I would take them</h2>'+
+   '<span class="more">smallest commitment first</span></div><div class="list">'+
+   o.fast.map(function(d,i){
+    var m=d.emi?Math.ceil(d.left/d.emi):null;
+    return '<div class="row" onclick="debtDetail(\''+d.id+'\')">'+
+     '<div class="tile" style="background:'+(i===0?'var(--g1);color:#fff':'#F2F1EB;color:var(--mut)')+
+      ';font-weight:700;font-size:14px">'+(i+1)+'</div>'+
+     '<div class="nm"><b>'+esc(d.name)+'</b><i>'+R(d.left)+' left'+
+      (m?' \u00B7 '+m+' month'+(m===1?'':'s'):'')+'</i></div>'+
+     '<div style="text-align:right"><div class="amt grn">'+R(freedBy(d))+'</div>'+
+      '<div style="font-size:10px;color:var(--mut)">freed</div></div></div>';}).join('')+'</div>'+
+   '<div class="ban plain"><span class="ic">\u2139</span><div>Clearing the smallest commitment first '+
+   'frees monthly cash quickest, which is what matters when the month does not reach the end. '+
+   'If you would rather save the most money overall, pay down whichever has the harshest terms first '+
+   '\u2014 check the rates in each lender\'s app.</div></div></div>';
+ }
+
+ /* what the month looks like day by day */
+ var td=new Date().getDate(),rows=dues().slice().sort(function(a,b){return a.day-b.day;});
+ if(rows.length){
+  var running=liquid();
+  h+='<div class="sec"><div class="sechead"><h2>The rest of this month</h2>'+
+   '<span class="more">'+R(liquid())+' now</span></div><div class="list">'+
+   rows.filter(function(o2){return o2.day>=td&&!isPaid(o2.id);}).map(function(o2){
+    running-=o2.amount;
+    var short=running<0;
+    return '<div class="row">'+
+     '<div class="tile" style="background:'+(short?'#FCF0EE;color:var(--red)':'#F2F1EB;color:var(--mut)')+
+      ';font-weight:700;font-size:13px">'+o2.day+'</div>'+
+     '<div class="nm"><b>'+esc(o2.name)+'</b><i>'+
+      (short?'you run out here':'leaves '+R(running))+'</i></div>'+
+     '<div class="amt '+(short?'red':'')+'">'+R(o2.amount)+'</div></div>';}).join('')+
+   '</div></div>';
+ }
+
+ h+='<div class="sec"><div class="sechead"><h2>What it is based on</h2></div><div class="card">'+
+  '<div style="font-size:12.5px;color:var(--mut);line-height:1.6">Income is the average of what you '+
+  'logged over the last three months'+(D.settings.incomeKnown?', overridden by the figure you set':'')+
+  '. Set it by hand if that is wrong.</div>'+
+  '<div class="mic" style="margin-top:15px">Monthly income</div>'+
+  '<input type="number" value="'+g.income+'" onchange="D.settings.incomeKnown=Number(this.value)||0;save();draw()">'+
+  '</div></div>';
+ return h+'<div style="height:16px"></div></div>';
 }
 function savePage(){
  var h='<div class="wrap">'+header('Money you are putting aside');
@@ -1888,9 +2062,9 @@ function savePage(){
    '</div></div>';
 
  h+='<div class="sec"><div class="strow">'+
-   strkCard(TESTS.saved,'days saved','\uD83C\uDFAF')+
-   strkCard(TESTS.money,'days logged','\uD83D\uDD25')+
-   strkCard(TESTS.income,'earning days','\uD83D\uDCB0')+
+   strkCard(TESTS.saved,'days saved','\uD83C\uDFAF','saved')+
+   strkCard(TESTS.money,'days logged','\uD83D\uDD25','money')+
+   strkCard(TESTS.income,'earning days','\uD83D\uDCB0','income')+
   '</div>'+strkNudge(TESTS.saved,'saving','put something aside')+'</div>';
  return h+'<div style="height:16px"></div></div>';
 }
@@ -1922,7 +2096,9 @@ function debtPage(){
  if(!dues().length)
   h+='<div class="ban plain"><span class="ic">✦</span><div>Nothing here yet. Add the loans and the bills '+
    'you pay every month, and the app will chase you for them and work out when each one clears.</div></div>';
- h+='<div style="display:flex;gap:8px;margin-top:14px">'+
+ h+='<button class="go ghost" style="margin-top:14px" onclick="go(\'gap\')">'+
+  'Where you stand, and which to clear first \u203A</button>';
+ h+='<div style="display:flex;gap:8px;margin-top:10px">'+
   '<button class="chip" style="flex:1;text-align:center" onclick="addDebtSheet()">+ Loan</button>'+
   '<button class="chip" style="flex:1;text-align:center" onclick="addBillSheet()">+ Monthly bill</button></div>';
 
@@ -2066,6 +2242,7 @@ function saveDebt(id){
 function togglePaid(id,silent){
  var m=ym();D.paid[m]=D.paid[m]||{};
  var o=dues().filter(function(x){return x.id===id;})[0];if(!o)return;
+ mark((D.paid[m][id]?'unticking ':'ticking off ')+o.name);
  if(D.paid[m][id]){
   if(!silent&&!confirm('Mark '+o.name+' as unpaid again?'))return;
   var rc=D.paid[m][id];
@@ -2100,9 +2277,10 @@ var TESTS={
  saved:  function(d){return pots().some(function(p){return intoAcct(p.acct,d)>0;});},
  income: function(d){return inDay(d)>0;}
 };
-function strkCard(test,label,icon){
+function strkCard(test,label,icon,key){
  var st=streakOf(test),pips=last7(test);
- return '<div class="strk '+(st.live&&st.n?'live':st.n?'cold':'')+'">'+
+ return '<div class="strk '+(st.live&&st.n?'live':st.n?'cold':'')+'"'+
+  (key?' onclick="streakSheet(\''+key+'\')"':'')+'>'+
   '<span class="fl">'+(st.n?icon:'\u00B7')+'</span><b>'+st.n+'</b><i>'+label+'</i>'+
   '<div class="pips">'+pips.map(function(y){return '<span class="'+(y?'y':'')+'"></span>';}).join('')+
   '</div></div>';
@@ -2119,6 +2297,80 @@ function strkNudge(test,what,verb){
   return '<div class="ban"><span class="ic">\uD83D\uDD25</span><div><b>'+st.n+
    ' days in a row.</b> Do not break it tomorrow.</div></div>';
  return '';
+}
+
+/* ===== streak detail, longest run, missed days ===== */
+var STREAKS={
+ food:  {t:'food',  label:'days logged',  icon:'\uD83D\uDD25', what:'logging a meal'},
+ onPlan:{t:'onPlan',label:'days on target',icon:'\uD83C\uDFAF', what:'staying inside your calories'},
+ moved: {t:'moved', label:'days moving',  icon:'\u26A1',       what:'moving'},
+ money: {t:'money', label:'days logged',  icon:'\uD83D\uDD25', what:'logging your money'},
+ income:{t:'income',label:'earning days', icon:'\uD83D\uDCB0', what:'bringing something in'},
+ saved: {t:'saved', label:'days saved',   icon:'\uD83C\uDFAF', what:'putting money aside'}
+};
+function longestRun(test,days){
+ var best=0,run=0;
+ for(var i=(days||120)-1;i>=0;i--){
+  if(test(dayAgo(i))){run++;if(run>best)best=run;}else run=0;
+ }
+ return best;
+}
+function runTotal(test,days){
+ var n=0;
+ for(var i=0;i<(days||30);i++)if(test(dayAgo(i)))n++;
+ return n;
+}
+function streakSheet(key){
+ var S=STREAKS[key];if(!S)return;
+ var test=TESTS[S.t],st=streakOf(test);
+ var best=longestRun(test),last30=runTotal(test,30);
+ var missed=[];
+ for(var i=1;i<30&&missed.length<6;i++)if(!test(dayAgo(i)))missed.push(dayAgo(i));
+ var grid='';
+ for(var j=29;j>=0;j--){
+  var d=dayAgo(j),on=test(d);
+  grid+='<div title="'+d+'" style="aspect-ratio:1;border-radius:5px;background:'+
+   (on?(j===0?'var(--g1)':'var(--g3)'):'#EDECE5')+'"></div>';
+ }
+ openSheet('<div class="grab"></div><h3>'+S.icon+' '+st.n+' '+S.label+'</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
+   (st.live?'Today is already counted.':st.n?'Still alive \u2014 but today is not done yet.':
+    'No run going right now.')+'</div>'+
+  '<div class="macro" style="margin-top:14px">'+
+   '<div><div class="mic">Now</div><b>'+st.n+'</b><div style="font-size:10px;color:var(--mut)">days</div></div>'+
+   '<div><div class="mic">Longest</div><b>'+best+'</b><div style="font-size:10px;color:var(--mut)">days</div></div>'+
+   '<div><div class="mic">Last 30</div><b>'+last30+'</b><div style="font-size:10px;color:var(--mut)">days</div></div>'+
+  '</div>'+
+  '<div class="mic" style="margin-top:18px">Last 30 days</div>'+
+  '<div style="display:grid;grid-template-columns:repeat(15,1fr);gap:4px;margin-top:9px">'+grid+'</div>'+
+  (missed.length?'<div class="mic" style="margin-top:18px">Days you missed</div>'+
+   '<div style="font-size:12.5px;color:var(--mut);margin-top:7px;line-height:1.7">'+
+   missed.map(function(d){return dshort(d);}).join('<br>')+'</div>':
+   '<div class="ban" style="margin-top:16px"><span class="ic">\uD83C\uDFC6</span><div>'+
+   'Not one missed day in the last month.</div></div>')+
+  (!st.live?'<div class="ban amber"><span class="ic">\uD83D\uDD25</span><div>'+
+   'Today is not counted yet. '+(st.n?'Keep the '+st.n+'-day run alive by ':'Start a run by ')+
+   S.what+'.</div></div>':'')+
+  '<button class="go ghost" onclick="closeSheet()">Close</button>');
+}
+
+/* a run that just ended, so it gets said once rather than quietly dropped */
+function brokenBanner(keys){
+ var out='';
+ keys.forEach(function(k){
+  var S=STREAKS[k],test=TESTS[S.t];
+  if(test(today())||test(dayAgo(1)))return;
+  var had=0;
+  for(var i=2;i<200;i++){if(test(dayAgo(i)))had++;else break;}
+  if(had<3)return;
+  if(D.answered['broke:'+k+':'+today()])return;
+  out+='<div class="ban warn"><span class="ic">\uD83D\uDCA2</span><div>'+
+   '<b>Your '+had+'-day run of '+S.what+' ended.</b> Nothing yesterday, nothing yet today. '+
+   'Do one small thing now and the count starts again.'+
+   ' <span style="text-decoration:underline" onclick="D.answered[\'broke:'+k+':\'+today()]=1;save();draw()">'+
+   'Dismiss</span></div></div>';
+ });
+ return out;
 }
 
 /* ================= CALENDAR + FULL DAY REPORT ================= */
@@ -2231,6 +2483,569 @@ function dayBody(d,inline){
 }
 
 /* ================= HEALTH VIEWS ================= */
+/* ================= THE ASSISTANT =================
+   Everything it knows is built fresh from the data each time, so it cannot drift
+   from what the app actually holds. */
+var CHAT=[], CHAT_BUSY=false, CHAT_PHOTO=null;
+
+function ctxBlock(){
+ var d=today(),g=gap();
+ var L=[];
+ L.push('TODAY IS '+d+' ('+dshort(d)+'). Currency rupees. User: '+(D.settings.name||'the user')+', Chennai.');
+ L.push('--- FOOD TODAY ---');
+ L.push('eaten '+eaten(d)+' kcal of a '+eatTarget()+' target; protein '+protein(d)+'g of '+proteinTarget()+'g;'+
+  ' burned '+burned(d)+' kcal; steps '+stepsOf(d)+'; water '+waterOf(d)+'ml of '+D.health.water+'ml.');
+ MEALS.forEach(function(m){
+  var it=foodOf(d).filter(function(f){return f.meal===m.id;});
+  if(it.length)L.push(m.name+': '+it.map(function(f){
+   return f.qty+' '+f.name+' ('+f.kcal+'kcal, '+(f.pro||0)+'g, id='+f.id+')';}).join('; '));
+ });
+ if(!foodOf(d).length)L.push('nothing eaten logged yet today.');
+ L.push('weight '+lastWeight()+'kg, target '+D.health.weightTarget+'kg, started '+D.health.weightStart+'kg.');
+ L.push('--- MONEY ---');
+ L.push('balances: '+D.accounts.map(function(a){return a.name+' '+Math.round(balance(a.id));}).join(', ')+
+  '; total '+Math.round(liquid())+'.');
+ L.push('this month in '+sum(txIn('month','in'))+', out '+sum(txIn('month','out'))+
+  '; today in '+inDay(d)+', out '+outDay(d)+'.');
+ L.push('monthly income about '+g.income+', committed to loans and bills '+g.committed+
+  ', so '+(g.left>=0?g.left+' spare':Math.abs(g.left)+' SHORT')+' each month.');
+ var unpaid=dues().filter(function(o){return !isPaid(o.id);});
+ if(unpaid.length)L.push('still due this month: '+unpaid.map(function(o){
+  return o.name+' '+o.amount+' on the '+o.day+' (id='+o.id+')';}).join('; '));
+ if(liveDebts().length)L.push('loans: '+liveDebts().map(function(x){
+  return x.name+' '+x.left+' left at '+x.emi+'/month (id='+x.id+')';}).join('; '));
+ if(pots().length)L.push('savings pots: '+pots().map(function(p){
+  return p.name+' has '+potSaved(p)+(p.target?' of '+p.target:'')+', '+(p.daily||0)+'/day (id='+p.id+')';}).join('; '));
+ L.push('--- HABITS ---');
+ L.push('streaks: logging food '+streakOf(TESTS.food).n+'d, on calorie target '+streakOf(TESTS.onPlan).n+
+  'd, moving '+streakOf(TESTS.moved).n+'d, logging money '+streakOf(TESTS.money).n+
+  'd, saving '+streakOf(TESTS.saved).n+'d.');
+ var l7=0,l7p=0,n7=0;
+ for(var i=1;i<=7;i++){if(foodOf(dayAgo(i)).length){l7+=eaten(dayAgo(i));l7p+=protein(dayAgo(i));n7++;}}
+ if(n7)L.push('last 7 days averaged '+Math.round(l7/n7)+' kcal and '+Math.round(l7p/n7)+'g protein over '+n7+' logged days.');
+ var fav=favFoods(6);
+ if(fav.length)L.push('usual foods: '+fav.map(function(f){return f.name;}).join(', ')+'.');
+ return L.join('\n');
+}
+
+var CHAT_RULES =
+ 'You are the assistant inside Momentum, a money and health app belonging to one person in Chennai. '+
+ 'You speak plainly and warmly, like someone who knows his situation. Never flatter. If he is over his '+
+ 'calories or short on money, say so kindly and plainly. Keep replies to one or two short sentences '+
+ 'unless he asks for detail.\n'+
+ 'He writes in English, Tamil, or Tamil in English letters, often with spelling mistakes. Read through '+
+ 'them. Common: muuta/muttai=egg, saadam/sadam=rice, kuzhambu/kulambu=gravy, poriyal=dry vegetable dish, '+
+ 'varuval=fry, sapadu=full meal, kadai=shop, selavu=spent.\n'+
+ 'ALWAYS reply with ONE json object and nothing else:\n'+
+ '{"say":"<your reply>","do":[ ...actions... ],"ask":["<chip>","<chip>"]}\n'+
+ '"do" may be empty. Allowed actions:\n'+
+ '{"a":"food","meal":"breakfast|lunch|snacks|dinner|drinks","items":[{"name":"","qty":1,"unit":"","kcal":0,"protein_g":0}]}\n'+
+ '{"a":"spend","amount":0,"category":"Food|Travel|Fuel|Groceries|Bills|Health|Shopping|Fun|Family|Debt|Other","note":""}\n'+
+ '{"a":"earn","amount":0,"source":"salary|rapido|uber|swiggy|other","note":"","mins":0}\n'+
+ '{"a":"activity","what":"steps|walk|treadmill|swim|cycle","value":0}\n'+
+ '{"a":"weight","value":0}  {"a":"water","ml":0}\n'+
+ '{"a":"editfood","id":"","qty":0,"kcal":0,"protein_g":0,"meal":""}  {"a":"delfood","id":""}\n'+
+ '{"a":"paid","id":""}  {"a":"unpaid","id":""}  {"a":"save","pot":"","amount":0}\n'+
+ 'Use the real ids from the context when changing or removing something.\n'+
+ 'If a quantity or portion genuinely changes the number and you cannot tell, put NO action in "do", '+
+ 'ask the one question in "say", and put two to four tappable answers in "ask". Otherwise leave "ask" empty '+
+ 'and make a sensible estimate rather than interrogating him.\n'+
+ 'For questions about his numbers, answer from the context only. Never invent a figure. If the context '+
+ 'does not contain it, say you do not have it.\n'+
+ 'Portions are South Indian: idli 58kcal/2g, dosa 133/2.7, chapati 104/3, 1 cup rice 205/4, sambar 65/3, '+
+ 'egg 78/6.3, chicken curry 250/20, tea with sugar 90/2, parotta 250/5.';
+
+function chatPage(){
+ var h='<div class="wrap" style="padding-bottom:12px">'+
+  '<div class="top"><div class="hello">'+
+   '<button class="iconbtn" onclick="go(MODE===\'finance\'?\'home\':\'home\')">\u2039</button>'+
+   '<div style="flex:1"><b>Assistant</b><i>'+
+    (hasKey()?'knows your day as it stands':'needs the AI key in Setup')+'</i></div>'+
+   '<button class="iconbtn" onclick="clearChat()">\u21BB</button></div></div>';
+
+ h+='<div id="chatlog" style="margin-top:16px">';
+ if(!CHAT.length){
+  h+='<div class="ban plain"><span class="ic">\u2726</span><div>Tell me what you ate or spent, or ask '+
+   'about your own numbers. I can change things too \u2014 "make that 3 eggs", "I did not pay Branch yet".'+
+   '</div></div>'+
+   '<div class="chips" style="margin-top:12px">'+
+   ['What should I eat tonight?','How am I doing this month?','Which loan should I clear first?',
+    'Am I getting enough protein?'].map(function(q){
+    return '<button class="chip" onclick="chatSend('+JSON.stringify(q).replace(/"/g,'&quot;')+')">'+q+'</button>';
+   }).join('')+'</div>';
+ }
+ CHAT.forEach(function(m){
+  if(m.role==='user')
+   h+='<div class="bub me">'+esc(m.text)+(m.photo?'<br><img src="'+m.photo+'" class="bubimg">':'')+'</div>';
+  else
+   h+='<div class="bub them">'+esc(m.text)+
+    (m.done&&m.done.length?'<div class="didit">'+m.done.map(esc).join('<br>')+'</div>':'')+'</div>';
+ });
+ if(CHAT_BUSY)h+='<div class="bub them typing"><span></span><span></span><span></span></div>';
+ h+='</div>';
+
+ var last=CHAT.length?CHAT[CHAT.length-1]:null;
+ if(last&&last.role==='bot'&&last.ask&&last.ask.length&&!CHAT_BUSY)
+  h+='<div class="chips" style="margin-top:12px">'+last.ask.map(function(q){
+   return '<button class="chip" onclick="chatSend('+JSON.stringify(q).replace(/"/g,'&quot;')+')">'+
+    esc(q)+'</button>';}).join('')+'</div>';
+
+ h+='<div class="qbar" style="position:sticky;bottom:14px;margin-top:16px">'+
+  '<input id="chatin" placeholder="'+(hasKey()?'Say anything\u2026':'Add your AI key first')+'" '+
+   'onkeydown="if(event.key===\'Enter\')chatSend()">'+
+  '<button class="qi" onclick="chatShoot()">\uD83D\uDCF7</button>'+
+  '<button class="qi" onclick="chatMic()">\uD83C\uDFA4</button>'+
+  '<button class="qgo" onclick="chatSend()">\u27A4</button></div>';
+ return h+'</div>';
+}
+function clearChat(){CHAT=[];CHAT_PHOTO=null;draw();}
+function chatScroll(){
+ setTimeout(function(){window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});},60);
+}
+function chatShoot(){pendingMeal='__chat__';document.getElementById('cam').click();}
+function chatMic(){listen();}
+
+function chatSend(preset){
+ var el=document.getElementById('chatin');
+ var t=(preset!==undefined&&preset!==null)?String(preset):((el&&el.value)||'').trim();
+ if(!t&&!CHAT_PHOTO)return;
+ if(el)el.value='';
+ if(!hasKey()){
+  CHAT.push({role:'user',text:t});
+  CHAT.push({role:'bot',text:'I need the AI key before I can do any of this. Setup \u2192 AI key.'});
+  draw();chatScroll();return;
+ }
+ var photo=CHAT_PHOTO;CHAT_PHOTO=null;
+ CHAT.push({role:'user',text:t||'(photo)',photo:photo?photo.thumb:null});
+ CHAT_BUSY=true;draw();chatScroll();
+
+ var history=CHAT.slice(-9,-1).map(function(m){
+  return (m.role==='user'?'HIM: ':'YOU: ')+m.text;}).join('\n');
+ var parts=[{text:CHAT_RULES+'\n\n=== WHAT IS TRUE RIGHT NOW ===\n'+ctxBlock()+
+  (history?'\n\n=== EARLIER IN THIS CONVERSATION ===\n'+history:'')+
+  (photo?'\n\nHe sent a photo. Read what is on the plate and log it unless he says otherwise.':'')+
+  '\n\n=== HE SAYS ===\n'+(t||'(just the photo)')}];
+ if(photo)parts.push({inline_data:{mime_type:'image/jpeg',data:photo.full.split(',')[1]}});
+
+ gemini(parts,function(j,err){
+  CHAT_BUSY=false;
+  if(err||!j){
+   CHAT.push({role:'bot',text:err==='no-key'?'Add your AI key in Setup first.':err});
+   draw();chatScroll();return;
+  }
+  var done=runActions(j.do||[],photo?photo.thumb:null);
+  CHAT.push({role:'bot',text:j.say||'Done.',done:done,
+   ask:(j.ask&&j.ask.length?j.ask.slice(0,4):null)});
+  save();draw();chatScroll();
+ });
+}
+
+/* every action the assistant is allowed to take, applied here rather than trusted blindly */
+function runActions(list,thumb){
+ if(!list||!list.length)return [];
+ mark('what the assistant just did');
+ var out=[],d=today();
+ list.forEach(function(a){
+  try{
+   if(a.a==='food'&&(a.items||[]).length){
+    var meal=MEALS.some(function(m){return m.id===a.meal;})?a.meal:mealNow();
+    var k=0,p=0;
+    a.items.forEach(function(it){
+     var kc=Number(it.kcal)||0,pr=Number(it.protein_g)||0;
+     k+=kc;p+=pr;
+     addFood(d,meal,it.name||'Food',Number(it.qty)||1,it.unit||'serving',kc,thumb,pr);
+     thumb=null;});
+    out.push('\u2713 '+a.items.map(function(it){
+     return ((Number(it.qty)||1)!==1?(Number(it.qty)||1)+' ':'')+String(it.name||'').toLowerCase();
+    }).join(', ')+' \u2014 '+Math.round(k)+' kcal, '+Math.round(p)+'g into '+meal);
+   }
+   else if(a.a==='spend'&&a.amount){
+    D.tx.push({id:nid(),date:d,amount:Number(a.amount),type:'out',
+     cat:CATS.indexOf(a.category)>-1?a.category:'Other',note:a.note||'',acct:D.accounts[0].id});
+    out.push('\u2713 '+R(a.amount)+' out \u2014 '+(a.note||a.category||'other'));
+   }
+   else if(a.a==='earn'&&a.amount){
+    D.tx.push({id:nid(),date:d,amount:Number(a.amount),type:'in',src:src(a.source).id,
+     note:a.note||'',acct:D.accounts[0].id,mins:Number(a.mins)||0});
+    out.push('\u2713 '+R(a.amount)+' in from '+src(a.source).name);
+   }
+   else if(a.a==='activity'&&a.value){
+    var kind=a.what==='steps'?'steps':(METS[a.what]?a.what:'walk');
+    var kk=actKcal({kind:kind,value:Number(a.value)});
+    addAct(d,kind,Number(a.value),kk);
+    out.push('\u2713 '+actLabel({kind:kind,value:Number(a.value)})+' \u2014 '+kk+' kcal');
+   }
+   else if(a.a==='weight'&&a.value){hSet(d,'weight',Number(a.value));
+    out.push('\u2713 weight '+a.value+' kg');}
+   else if(a.a==='water'&&a.ml){hSet(d,'water',waterOf(d)+Number(a.ml));
+    out.push('\u2713 '+a.ml+' ml water');}
+   else if(a.a==='editfood'&&a.id){
+    var f=null,day=null;
+    Object.keys(D.food).forEach(function(k2){
+     (D.food[k2]||[]).forEach(function(x){if(x.id===a.id){f=x;day=k2;}});});
+    if(f){
+     if(a.qty){
+      var pk=f.qty?f.kcal/f.qty:f.kcal, pp=f.qty?(f.pro||0)/f.qty:(f.pro||0);
+      f.qty=Number(a.qty);f.kcal=Math.round(pk*f.qty);f.pro=Math.round(pp*f.qty*10)/10;
+     }
+     if(a.kcal)f.kcal=Math.round(Number(a.kcal));
+     if(a.protein_g)f.pro=Math.round(Number(a.protein_g)*10)/10;
+     if(a.meal&&MEALS.some(function(m){return m.id===a.meal;}))f.meal=a.meal;
+     out.push('\u2713 '+f.name+' is now '+f.qty+' \u2014 '+f.kcal+' kcal');
+    }
+   }
+   else if(a.a==='delfood'&&a.id){
+    var nm='';
+    Object.keys(D.food).forEach(function(k2){
+     D.food[k2]=(D.food[k2]||[]).filter(function(x){
+      if(x.id===a.id){nm=x.name;return false;} return true;});});
+    if(nm)out.push('\u2713 removed '+nm);
+   }
+   else if(a.a==='paid'&&a.id){
+    if(!isPaid(a.id)){togglePaid(a.id,true);out.push('\u2713 ticked off');}
+   }
+   else if(a.a==='unpaid'&&a.id){
+    if(isPaid(a.id)){togglePaid(a.id,true);out.push('\u2713 put back as unpaid');}
+   }
+   else if(a.a==='save'&&a.amount){
+    var pot=pots().filter(function(x){return x.id===a.pot||x.name===a.pot;})[0];
+    if(pot){
+     var from=D.accounts.filter(function(x){return x.id!==pot.acct;})
+      .sort(function(x,y){return balance(y.id)-balance(x.id);})[0];
+     if(from){addSaving(pot.id,Number(a.amount),from.id);
+      out.push('\u2713 '+R(a.amount)+' into '+pot.name);}
+    }
+   }
+  }catch(e){}
+ });
+ save();
+ return out;
+}
+
+/* ===== the month, looked back on ===== */
+function monthRange(m){
+ var y=Number(m.slice(0,4)),mo=Number(m.slice(5,7));
+ var dim=new Date(y,mo,0).getDate(),out=[];
+ for(var i=1;i<=dim;i++)out.push(m+'-'+p2(i));
+ return out;
+}
+function reviewSheet(m){
+ m=m||ym();
+ var days=monthRange(m).filter(function(d){return d<=today();});
+ var inM=D.tx.filter(function(t){return t.date.slice(0,7)===m&&t.type==='in';});
+ var outM=D.tx.filter(function(t){return t.date.slice(0,7)===m&&t.type==='out';});
+ var earned=sum(inM),spent=sum(outM);
+ var cats=groupBy(outM,'cat'),srcs=groupBy(inM,'src');
+ var fed=days.filter(function(d){return foodOf(d).length;});
+ var avgCal=fed.length?Math.round(fed.reduce(function(x,d){return x+eaten(d);},0)/fed.length):0;
+ var avgPro=fed.length?Math.round(fed.reduce(function(x,d){return x+protein(d);},0)/fed.length):0;
+ var moved=days.filter(function(d){return actOf(d).length;}).length;
+ var wts=days.filter(function(d){return (D.hlog[d]||{}).weight;});
+ var wDelta=wts.length>1?D.hlog[wts[0]].weight-D.hlog[wts[wts.length-1]].weight:0;
+ var paidOff=dues().filter(function(o){return D.paid[m]&&D.paid[m][o.id];});
+ var label=new Date(m+'-01T12:00').toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+
+ var head = spent>earned
+  ? 'You spent '+R(spent-earned)+' more than came in.'
+  : 'You kept '+R(earned-spent)+' of what came in.';
+
+ openSheet('<div class="grab"></div><h3>'+label+'</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:3px">'+head+'</div>'+
+  '<div class="macro" style="margin-top:14px">'+
+   '<div><div class="mic">In</div><b class="grn">'+R(earned)+'</b></div>'+
+   '<div><div class="mic">Out</div><b class="red">'+R(spent)+'</b></div>'+
+   '<div><div class="mic">Paid off</div><b>'+paidOff.length+'</b>'+
+    '<div style="font-size:10px;color:var(--mut)">of '+dues().length+'</div></div></div>'+
+
+  (cats.length?'<div class="mic" style="margin-top:20px">Where it went</div>'+
+   adonut(cats.map(function(c){return {value:c.value,color:col(c.name)};}),spent,'Spent',R(spent))+
+   '<div class="leg">'+cats.slice(0,6).map(function(c){
+    return '<div><span class="dot" style="background:'+col(c.name)+'"></span>'+esc(c.name)+
+     '<b>'+R(c.value)+'</b></div>';}).join('')+'</div>':'')+
+
+  (srcs.length?'<div class="mic" style="margin-top:20px">Where it came from</div>'+
+   '<div class="list" style="margin-top:9px">'+srcs.map(function(x){
+    return '<div class="row"><div class="tile" style="background:var(--mint)">'+src(x.name).icon+'</div>'+
+     '<div class="nm"><b>'+esc(src(x.name).name)+'</b><i>'+
+      Math.round(x.value/Math.max(1,earned)*100)+'% of the month</i></div>'+
+     '<div class="amt grn">'+R(x.value)+'</div></div>';}).join('')+'</div>':'')+
+
+  '<div class="mic" style="margin-top:20px">The body</div>'+
+  '<div class="macro" style="margin-top:9px">'+
+   '<div><div class="mic">Ate</div><b>'+N(avgCal)+'</b>'+
+    '<div style="font-size:10px;color:var(--mut)">kcal a day</div></div>'+
+   '<div><div class="mic">Protein</div><b>'+avgPro+'g</b>'+
+    '<div style="font-size:10px;color:var(--mut)">a day</div></div>'+
+   '<div><div class="mic">Moved</div><b>'+moved+'</b>'+
+    '<div style="font-size:10px;color:var(--mut)">days</div></div></div>'+
+  (wts.length>1?'<div class="ban'+(wDelta>0?'':' plain')+'"><span class="ic">\u2696\uFE0F</span><div>'+
+   (wDelta>0?'Down <b>'+wDelta.toFixed(1)+' kg</b> across the month.'
+    :wDelta<0?'Up '+(-wDelta).toFixed(1)+' kg across the month.'
+    :'Weight held level across the month.')+'</div></div>':'')+
+  (fed.length?'<div class="ban plain"><span class="ic">\u2139</span><div>You logged food on <b>'+
+   fed.length+' of '+days.length+' days</b>. The thinner the logging, the less these numbers mean.'+
+   '</div></div>':'')+
+  '<button class="go ghost" onclick="reviewSheet(\''+prevMonth(m)+'\')">'+
+   new Date(prevMonth(m)+'-01T12:00').toLocaleDateString('en-IN',{month:'long'})+' before this</button>'+
+  '<button class="go" onclick="closeSheet()">Close</button>');
+}
+function prevMonth(m){
+ var d=new Date(Number(m.slice(0,4)),Number(m.slice(5,7))-2,1);
+ return d.getFullYear()+'-'+p2(d.getMonth()+1);
+}
+
+/* ===== a PIN, since this holds every number about his money ===== */
+function lockNeeded(){return !!(D.settings.pin&&!window._unlocked);}
+function lockScreen(){
+ return '<div class="wrap" style="padding-top:calc(70px + env(safe-area-inset-top));text-align:center">'+
+  '<div style="width:60px;height:60px;border-radius:19px;background:var(--g1);margin:0 auto;'+
+   'display:grid;place-items:center;font-size:25px;color:#fff">\u25CF</div>'+
+  '<h1 style="font-size:21px;font-weight:800;margin-top:16px">Momentum</h1>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:6px">Enter your PIN</div>'+
+  '<input id="pin_in" type="password" inputmode="numeric" maxlength="8" '+
+   'style="text-align:center;letter-spacing:8px;font-size:20px;margin-top:20px" '+
+   'oninput="if(this.value.length>=4)tryPin()">'+
+  '<div id="pin_msg" style="font-size:12.5px;color:var(--red);margin-top:10px;min-height:18px"></div>'+
+  '</div>';
+}
+function tryPin(){
+ var v=(document.getElementById('pin_in')||{}).value||'';
+ if(v===D.settings.pin){
+  window._unlocked=1;chrome(true);draw();
+ }else if(v.length>=String(D.settings.pin).length){
+  var m=document.getElementById('pin_msg');
+  if(m)m.textContent='Not that one.';
+  var i=document.getElementById('pin_in');
+  if(i)i.value='';
+ }
+}
+function pinSheet(){
+ var on=!!D.settings.pin;
+ openSheet('<div class="grab"></div><h3>'+(on?'PIN is on':'Lock the app')+'</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px;line-height:1.5">'+
+  'Four to eight digits, asked each time you open it. It only locks this app on this phone \u2014 '+
+  'it is not encryption, and anyone with your unlocked phone and patience could still get at the data. '+
+  'Do not reuse your bank PIN.</div>'+
+  (on?'<button class="go red" onclick="D.settings.pin=\'\';save();closeSheet();toast(\'PIN removed.\')">'+
+    'Turn it off</button>'
+   :'<input id="pin_a" type="password" inputmode="numeric" maxlength="8" placeholder="New PIN">'+
+    '<input id="pin_b" type="password" inputmode="numeric" maxlength="8" placeholder="Again">'+
+    '<button class="go" onclick="setPin()">Turn it on</button>')+
+  '<button class="go ghost" onclick="closeSheet()">Close</button>');
+}
+function setPin(){
+ var a=(document.getElementById('pin_a')||{}).value||'';
+ var b=(document.getElementById('pin_b')||{}).value||'';
+ if(!/^\d{4,8}$/.test(a))return toast('Four to eight digits.');
+ if(a!==b)return toast('The two do not match.');
+ D.settings.pin=a;window._unlocked=1;save();closeSheet();
+ toast('PIN on. Keep a backup \u2014 forgetting it means erasing and restoring.');
+}
+
+/* ===== riding sessions: what an hour out there is actually worth ===== */
+function liveSession(){return D.session||null;}
+function startSession(srcId){
+ D.session={src:srcId,start:Date.now(),date:today()};
+ save();closeSheet();draw();
+ toast('Clock started for '+src(srcId).name+'. Stop it when you get home.');
+}
+function sessionMins(){
+ var s2=liveSession();
+ return s2?Math.max(1,Math.round((Date.now()-s2.start)/60000)):0;
+}
+function stopSessionSheet(){
+ var s2=liveSession();if(!s2)return;
+ var mins=sessionMins();
+ openSheet('<div class="grab"></div><h3>'+esc(src(s2.src).name)+' \u2014 '+fmtMins(mins)+'</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
+  'What did you bring back, and what went in the tank?</div>'+
+  '<div class="mic" style="margin-top:16px">Earned</div>'+
+  '<input id="ss_earn" type="number" inputmode="decimal" placeholder="0">'+
+  '<div class="mic" style="margin-top:16px">Petrol put in (leave blank if none)</div>'+
+  '<input id="ss_fuel" type="number" inputmode="decimal" placeholder="0">'+
+  '<div class="mic" style="margin-top:16px">Minutes</div>'+
+  '<input id="ss_mins" type="number" inputmode="numeric" value="'+mins+'">'+
+  '<button class="go" onclick="endSession()">Save the trip</button>'+
+  '<button class="go red" onclick="D.session=null;save();closeSheet();draw();toast(\'Clock cleared.\')">'+
+  'Throw it away</button>'+
+  '<button class="go ghost" onclick="closeSheet()">Keep riding</button>');
+}
+function fmtMins(m){
+ if(m<60)return m+' min';
+ var h2=Math.floor(m/60),r=m%60;
+ return h2+'h'+(r?' '+r+'m':'');
+}
+function endSession(){
+ var s2=liveSession();if(!s2)return;
+ function v(k){return Number((document.getElementById(k)||{}).value)||0;}
+ var earn=v('ss_earn'),fuel=v('ss_fuel'),mins=v('ss_mins')||sessionMins();
+ if(!earn&&!fuel)return toast('Put in what you earned.');
+ mark('that trip');
+ var sid=nid();
+ if(earn)D.tx.push({id:nid(),date:today(),amount:earn,type:'in',src:s2.src,
+  note:fmtMins(mins)+' out',acct:D.accounts[0].id,mins:mins,sid:sid});
+ if(fuel)D.tx.push({id:nid(),date:today(),amount:fuel,type:'out',cat:'Fuel',
+  note:'Petrol \u2014 '+src(s2.src).name,acct:D.accounts[0].id,sid:sid});
+ D.session=null;save();closeSheet();draw();
+ var net=earn-fuel,per=mins?Math.round(net/(mins/60)):0;
+ toast(R(net)+' kept over '+fmtMins(mins)+' \u2014 about '+R(per)+' an hour.');
+}
+function rideStats(span){
+ var r=range(span);
+ var rows=D.tx.filter(function(t){return t.type==='in'&&t.mins&&t.date>=r[0]&&t.date<=r[1];});
+ var by={};
+ rows.forEach(function(t){
+  var k=t.src||'other';
+  by[k]=by[k]||{earn:0,mins:0,fuel:0,trips:0};
+  by[k].earn+=t.amount;by[k].mins+=t.mins;by[k].trips++;
+  if(t.sid)D.tx.forEach(function(x){
+   if(x.sid===t.sid&&x.type==='out')by[k].fuel+=x.amount;});
+ });
+ return Object.keys(by).map(function(k){
+  var b=by[k];
+  return {src:k,earn:b.earn,fuel:b.fuel,mins:b.mins,trips:b.trips,
+   net:b.earn-b.fuel,perHour:b.mins?Math.round((b.earn-b.fuel)/(b.mins/60)):0};
+ }).sort(function(a,b){return b.perHour-a.perHour;});
+}
+function rideSheet(){
+ var gigs=D.sources.filter(function(x){return x.id!=='salary'&&x.id!=='other';});
+ openSheet('<div class="grab"></div><h3>Going out to ride?</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
+  'Start the clock and the app works out what the hour was worth after petrol.</div>'+
+  '<div class="chips" style="margin-top:14px">'+gigs.map(function(x){
+   return '<button class="chip" onclick="startSession(\''+x.id+'\')">'+x.icon+' '+esc(x.name)+'</button>';
+  }).join('')+'</div>'+
+  '<button class="go ghost" onclick="closeSheet()">Not now</button>');
+}
+
+/* ===== repeat what you already eat ===== */
+function favFoods(n){
+ var tally={};
+ for(var i=0;i<60;i++){
+  foodOf(dayAgo(i)).forEach(function(f){
+   var k=f.name;
+   tally[k]=tally[k]||{name:f.name,n:0,qty:f.qty,unit:f.unit,kcal:f.kcal,pro:f.pro||0};
+   tally[k].n++;
+  });
+ }
+ return Object.keys(tally).map(function(k){return tally[k];})
+  .sort(function(a,b){return b.n-a.n;}).slice(0,n||8);
+}
+function addFav(name,meal){
+ var f=favFoods(40).filter(function(x){return x.name===name;})[0];
+ if(!f)return;
+ mark('adding '+f.name);
+ addFood(FDAY||today(),meal||mealNow(),f.name,f.qty,f.unit,f.kcal,null,f.pro);
+ draw();toast(f.name+' added \u2014 '+Math.round(f.kcal)+' kcal');
+}
+function repeatMeal(meal,fromDay){
+ var src2=foodOf(fromDay||dayAgo(1)).filter(function(f){return f.meal===meal;});
+ if(!src2.length)return toast('Nothing to copy from that day.');
+ mark('copying that meal');
+ src2.forEach(function(f){
+  addFood(FDAY||today(),meal,f.name,f.qty,f.unit,f.kcal,null,f.pro||0);});
+ closeSheet();draw();
+ toast('Copied '+src2.length+' item'+(src2.length===1?'':'s')+' into '+meal+'.');
+}
+
+/* ===== every tile on Today opens something ===== */
+function waterSheet(){
+ var sizes=D.health.cups||[['Sip',50],['Glass',200],['Bottle',500],['1 litre',1000],['2 litre',2000]];
+ var now=waterOf(today()),tg=D.health.water;
+ openSheet('<div class="grab"></div><h3>Water</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
+   (now/1000).toFixed(2)+' L so far today, of '+(tg/1000).toFixed(1)+' L.</div>'+
+  '<div class="bar" style="margin-top:12px"><i style="width:'+Math.min(100,now/tg*100)+
+   '%;background:var(--blue)"></i></div>'+
+  '<div class="mic" style="margin-top:18px">Add</div>'+
+  '<div class="chips">'+sizes.map(function(c){
+   return '<button class="chip" onclick="addWater('+c[1]+')">'+esc(c[0])+'<span style="color:var(--mut)"> '+
+    c[1]+'ml</span></button>';}).join('')+'</div>'+
+  '<div class="mic" style="margin-top:18px">Or type it</div>'+
+  '<input id="w_ml" type="number" inputmode="numeric" placeholder="ml">'+
+  '<button class="go" onclick="addWater(Number((document.getElementById(\'w_ml\')||{}).value)||0)">Add</button>'+
+  '<button class="go ghost" onclick="waterFix()">Set the total, or change the target</button>'+
+  '<button class="go ghost" onclick="closeSheet()">Done</button>');
+}
+function waterFix(){
+ openSheet('<div class="grab"></div><h3>Water</h3>'+
+  '<div class="mic" style="margin-top:15px">Total drunk today (ml)</div>'+
+  '<input id="w_tot" type="number" value="'+waterOf(today())+'">'+
+  '<div class="mic" style="margin-top:15px">Daily target (ml)</div>'+
+  '<input id="w_tg" type="number" value="'+D.health.water+'">'+
+  '<button class="go" onclick="saveWater()">Save</button>'+
+  '<button class="go ghost" onclick="waterSheet()">Back</button>');
+}
+function saveWater(){
+ mark('the water change');
+ var t=Number((document.getElementById('w_tot')||{}).value);
+ if(!isNaN(t))hSet(today(),'water',Math.max(0,t));
+ var g=Number((document.getElementById('w_tg')||{}).value);
+ if(g>0)D.health.water=g;
+ save();closeSheet();draw();toast('Saved.');
+}
+
+function burnSheet(){
+ var d=today(),acts=actOf(d);
+ openSheet('<div class="grab"></div><h3>Burned today</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+N(burned(d))+' kcal of a '+
+   N(D.health.burn)+' target.</div>'+
+  '<div class="mic" style="margin-top:18px">Add</div>'+
+  '<div class="chips">'+
+   '<button class="chip" onclick="askSteps()">\uD83D\uDC63 Steps</button>'+
+   '<button class="chip" onclick="askAct(\'walk\')">\uD83D\uDEB6 Walk</button>'+
+   '<button class="chip" onclick="askAct(\'treadmill\')">\uD83C\uDFC3 Treadmill</button>'+
+   '<button class="chip" onclick="askAct(\'swim\')">\uD83C\uDFCA Swim</button>'+
+   '<button class="chip" onclick="askAct(\'cycle\')">\uD83D\uDEB4 Cycle</button></div>'+
+  (acts.length?'<div class="mic" style="margin-top:18px">Logged today \u2014 tap to change</div>'+
+   '<div class="list" style="margin-top:9px">'+acts.map(function(a){
+    return '<div class="row" onclick="editAct(\''+d+'\',\''+a.id+'\')">'+
+     '<div class="tile" style="background:var(--mint)">'+
+      (a.kind==='steps'?'\uD83D\uDC63':a.kind==='treadmill'?'\uD83C\uDFC3':a.kind==='swim'?'\uD83C\uDFCA':
+       a.kind==='cycle'?'\uD83D\uDEB4':'\uD83D\uDEB6')+'</div>'+
+     '<div class="nm"><b>'+esc(actLabel(a))+'</b><i>'+N(a.kcal)+' kcal</i></div>'+
+     '<span style="color:var(--mut)">\u270E</span></div>';}).join('')+'</div>':
+   '<div class="ban plain" style="margin-top:16px"><span class="ic">\u25CB</span><div>'+
+   'Nothing logged today.</div></div>')+
+  '<div class="mic" style="margin-top:18px">Daily target (kcal)</div>'+
+  '<input type="number" value="'+D.health.burn+
+   '" onchange="D.health.burn=Number(this.value)||400;save();draw()">'+
+  '<button class="go ghost" onclick="closeSheet()">Done</button>');
+}
+
+function proteinSheet(){
+ var d=today(),pro=protein(d),pt=proteinTarget(),left=Math.max(0,pt-pro);
+ var ideas=[['Egg',2],['Curd',1],['Dal',1],['Chicken curry',1],['Paneer',1],['Milk',1],['Soya',1],['Chana',1]]
+  .map(function(x){
+   var f=FOODS.filter(function(y){return y[0]===x[0];})[0];
+   return f?{name:f[0],qty:x[1],kcal:f[2]*x[1],pro:(f[5]||0)*x[1]}:null;})
+  .filter(Boolean).sort(function(a,b){return (b.pro/Math.max(1,b.kcal))-(a.pro/Math.max(1,a.kcal));});
+ openSheet('<div class="grab"></div><h3>Protein today</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+pro+'g of '+pt+'g.</div>'+
+  '<div class="bar" style="margin-top:12px"><i style="width:'+Math.min(100,pro/pt*100)+'%;background:'+
+   (pro>=pt*0.8?'var(--g2)':'var(--amber)')+'"></i></div>'+
+  (left?'<div class="ban amber" style="margin-top:14px"><span class="ic">\uD83E\uDD5A</span><div>'+
+    left+'g short. These cost the fewest calories per gram \u2014 tap to add.</div></div>'+
+   '<div class="list" style="margin-top:4px">'+ideas.slice(0,5).map(function(i){
+    return '<div class="row" onclick="addProtein(\''+esc(i.name)+'\','+i.qty+')">'+
+     '<div class="tile" style="background:var(--mint)">\uD83C\uDF7D</div>'+
+     '<div class="nm"><b>'+i.qty+' '+esc(i.name.toLowerCase())+'</b><i>'+Math.round(i.kcal)+' kcal</i></div>'+
+     '<div class="amt grn">+'+(Math.round(i.pro*10)/10)+'g</div></div>';}).join('')+'</div>'
+   :'<div class="ban" style="margin-top:14px"><span class="ic">\uD83C\uDF3F</span><div>'+
+    'Target met for today.</div></div>')+
+  '<div class="mic" style="margin-top:18px">Daily target (g)</div>'+
+  '<input type="number" value="'+pt+'" onchange="D.health.protein=Number(this.value)||0;save();draw()">'+
+  '<button class="go ghost" onclick="closeSheet()">Done</button>');
+}
+function addProtein(name,qty){
+ var f=FOODS.filter(function(x){return x[0]===name;})[0];if(!f)return;
+ mark('adding '+qty+' '+name.toLowerCase());
+ addFood(today(),mealNow(),f[0],qty,f[3],f[2]*qty,null,(f[5]||0)*qty);
+ closeSheet();draw();toast(qty+' '+name.toLowerCase()+' added \u2014 +'+
+  Math.round((f[5]||0)*qty)+'g protein');
+}
+
+function stepsSheet(){askSteps();}
 function healthHome(){
  var d=today(),H=D.health;
  var ate=eaten(d),burn=burned(d),target=eatTarget(),left=target-ate+burn;
@@ -2239,7 +3054,8 @@ function healthHome(){
   quickbox('4 idli sambar · tea · steps 6500 · weight 91.4');
 
  var pct=Math.min(100,Math.round(ate/Math.max(1,target)*100));
- h+='<div class="sec"><div class="card" style="background:var(--g1);color:#fff;border-color:transparent">'+
+ h+='<div class="sec"><div class="card" onclick="dayReport(today())" '+
+  'style="background:var(--g1);color:#fff;border-color:transparent">'+
   '<div style="display:flex;align-items:center;gap:14px">'+
   '<div style="flex:1"><div class="mic" style="color:rgba(255,255,255,.6)">Still to eat</div>'+
   '<div class="big" style="margin-top:4px">'+(left>=0?N(left):'−'+N(-left))+
@@ -2252,14 +3068,20 @@ function healthHome(){
  else if(ate>0&&left<250)h+='<div class="ban"><span class="ic">🌿</span><div>Close to the line — '+
   N(left)+' kcal left. Keep dinner light.</div></div>';
 
+ if(canUndo())
+  h+='<div class="ban plain" style="align-items:center"><span class="ic">\u21B6</span>'+
+   '<div>Just changed something by mistake?</div>'+
+   '<button class="chip" onclick="undo()">Undo</button></div>';
+
  h+='<div class="sec"><div class="strow">'+
-   strkCard(TESTS.food,'days logged','\uD83D\uDD25')+
-   strkCard(TESTS.onPlan,'on target','\uD83C\uDFAF')+
-   strkCard(TESTS.moved,'days moving','\u26A1')+
-  '</div>'+strkNudge(TESTS.food,'logging','log a meal')+'</div>';
+   strkCard(TESTS.food,'days logged','\uD83D\uDD25','food')+
+   strkCard(TESTS.onPlan,'on target','\uD83C\uDFAF','onPlan')+
+   strkCard(TESTS.moved,'days moving','\u26A1','moved')+
+  '</div>'+strkNudge(TESTS.food,'logging','log a meal')+
+  brokenBanner(['food','moved'])+'</div>';
 
  var pro=protein(d),pt=proteinTarget();
- h+='<div class="sec"><div class="card"><div style="display:flex;align-items:baseline">'+
+ h+='<div class="sec"><div class="card" onclick="proteinSheet()"><div style="display:flex;align-items:baseline">'+
   '<div class="mic">Protein today</div>'+
   '<div style="margin-left:auto;font-size:12px;color:var(--mut)">'+pro+'g of '+pt+'g</div></div>'+
   '<div class="bar" style="margin-top:9px"><i style="width:'+Math.min(100,pro/pt*100)+'%;background:'+
@@ -2269,13 +3091,13 @@ function healthHome(){
   '</div></div></div>';
 
  h+='<div class="sec"><div class="trio">'+
-  '<div class="card"><div class="mic">Burned</div><div class="v">'+N(burn)+'</div>'+
+  '<div class="card" onclick="burnSheet()"><div class="mic">Burned</div><div class="v">'+N(burn)+'</div>'+
    '<div style="font-size:10.5px;color:var(--mut);margin-top:3px">of '+N(H.burn)+'</div>'+
    '<div class="bar"><i style="width:'+Math.min(100,burn/Math.max(1,H.burn)*100)+'%;background:var(--g2)"></i></div></div>'+
-  '<div class="card"><div class="mic">Steps</div><div class="v">'+N(steps)+'</div>'+
+  '<div class="card" onclick="askSteps()"><div class="mic">Steps</div><div class="v">'+N(steps)+'</div>'+
    '<div style="font-size:10.5px;color:var(--mut);margin-top:3px">of '+N(H.steps)+'</div>'+
    '<div class="bar"><i style="width:'+Math.min(100,steps/Math.max(1,H.steps)*100)+'%;background:var(--g3)"></i></div></div>'+
-  '<div class="card"><div class="mic">Water</div><div class="v">'+(water/1000).toFixed(1)+
+  '<div class="card" onclick="waterSheet()"><div class="mic">Water</div><div class="v">'+(water/1000).toFixed(1)+
    '<span style="font-size:11px;font-weight:500;color:var(--mut)">L</span></div>'+
    '<div style="font-size:10.5px;color:var(--mut);margin-top:3px">of '+(H.water/1000).toFixed(1)+'L</div>'+
    '<div class="bar"><i style="width:'+Math.min(100,water/Math.max(1,H.water)*100)+'%;background:var(--blue)"></i></div></div>'+
@@ -2299,7 +3121,7 @@ function healthHome(){
    '<div class="v">'+w+'<span style="font-size:12px;color:var(--mut);font-weight:500"> kg</span></div>'+
    '<div style="font-size:11.5px;color:'+(lost>0?'var(--g2)':'var(--mut)')+';margin-top:4px">'+
    (lost>0?'↓ '+lost.toFixed(1)+' kg from '+H.weightStart:'started at '+H.weightStart+' kg')+'</div></div>'+
-  '<div class="card"><div class="mic">To target</div>'+
+  '<div class="card" onclick="healthSettings()"><div class="mic">To target</div>'+
    '<div class="v">'+Math.max(0,w-H.weightTarget).toFixed(1)+
     '<span style="font-size:12px;color:var(--mut);font-weight:500"> kg</span></div>'+
    '<div style="font-size:11.5px;color:var(--mut);margin-top:4px">at 0.7 kg a week ≈ '+
@@ -2368,7 +3190,7 @@ function foodPage(){
        (clockOf(f)?' <span style="color:var(--mut);font-size:11px">'+clockOf(f)+'</span>':'')+'</span>'+
       '<span class="fk">'+N(f.kcal)+'<span style="color:var(--mut);font-weight:500"> · '+
        (f.pro||0)+'g</span></span>'+
-      '<button class="x" onclick="delFood(\''+d+'\',\''+f.id+'\')">×</button></div>';}).join('')+'</div>':'')+
+      '<button class="x" onclick="editFood(\''+d+'\',\''+f.id+'\')">✎</button></div>';}).join('')+'</div>':'')+
    '</div>';
  });
  h+='</div>';
@@ -2379,19 +3201,28 @@ function foodPage(){
 function openFood(meal){
  pendingMeal=meal;
  var m=MEALS.filter(function(x){return x.id===meal;})[0]||MEALS[0];
- var common=['Idli','Dosa','Pongal','Chapati','Rice','Sambar','Tea','Coffee','Egg','Banana','Vada','Parotta',
-  'Curd rice','Chicken curry','Biscuit','Buttermilk'];
+ var favs=favFoods(8);
+ var common=favs.length>=4?favs.map(function(f){return f.name;})
+  :['Idli','Dosa','Pongal','Chapati','Rice','Sambar','Tea','Coffee','Egg','Banana','Vada','Parotta',
+    'Curd rice','Chicken curry','Biscuit','Buttermilk'];
+ var yday=foodOf(dayAgo(1)).filter(function(f){return f.meal===meal;});
  openSheet('<div class="grab"></div><h3>'+m.name+'</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:3px">'+esc(m.ta)+'</div>'+
   '<input id="fq" placeholder="4 idli sambar chutney" onkeydown="if(event.key===\'Enter\')addFoodText(\''+meal+'\')">'+
+  (favs.length>=4?'<div class="mic" style="margin-top:15px">What you usually have</div>':'')+
   '<div class="chips">'+common.map(function(c){
-   return '<button class="chip" onclick="quickFood(\''+meal+'\',\''+c+'\')">'+c+'</button>';}).join('')+'</div>'+
+   return '<button class="chip" onclick="'+(favs.length>=4?'addFav':'quickFood2')+
+    '(\''+esc(c).replace(/'/g,"")+'\',\''+meal+'\')">'+esc(c)+'</button>';}).join('')+'</div>'+
+  (yday.length?'<button class="go ghost" onclick="repeatMeal(\''+meal+'\')">'+
+   'Same as yesterday \u2014 '+yday.length+' item'+(yday.length===1?'':'s')+', '+
+   N(eaten(dayAgo(1),meal))+' kcal</button>':'')+
   '<button class="go" onclick="addFoodText(\''+meal+'\')">Add</button>'+
   '<button class="go ghost" onclick="pendingMeal=\''+meal+'\';document.getElementById(\'cam\').click()">'+
    '📷 Photo of the plate</button>'+
   '<button class="go ghost" onclick="closeSheet()">Cancel</button>');
  setTimeout(function(){var e=document.getElementById('fq');if(e)e.focus();},170);
 }
+function quickFood2(name,meal){return quickFood(meal,name);}
 function quickFood(meal,name){
  var f=FOODS.filter(function(x){return x[0]===name;})[0];if(!f)return;
  addFood(FDAY||today(),meal,f[0],f[4],f[3],f[2]*f[4],null,(f[5]||0)*f[4]);
@@ -2436,7 +3267,7 @@ function movePage(){
     (a.kind==='steps'?'👣':a.kind==='treadmill'?'🏃':a.kind==='swim'?'🏊':
      a.kind==='cycle'?'🚴':'🚶')+'</div>'+
     '<div class="nm"><b>'+esc(actLabel(a))+'</b><i>'+N(a.kcal)+' kcal</i></div>'+
-    '<button class="x" onclick="delAct(\''+d+'\',\''+a.id+'\')">×</button></div>';}).join('')
+    '<button class="x" onclick="editAct(\''+d+'\',\''+a.id+'\')">✎</button></div>';}).join('')
    :'<div class="row"><div class="nm"><i>Nothing logged today.</i></div></div>')+'</div>';
  if(acts.some(function(a){return a.kind==='steps';})&&
     acts.some(function(a){return a.kind==='walk'||a.kind==='treadmill';}))
@@ -2518,9 +3349,9 @@ function healthReport(){
 
  h+='<div class="sec"><div class="sechead"><h2>Streaks</h2><span class="more">last 7 days below each</span></div>'+
   '<div class="strow">'+
-   strkCard(TESTS.food,'days logged','\uD83D\uDD25')+
-   strkCard(TESTS.onPlan,'days on target','\uD83C\uDFAF')+
-   strkCard(TESTS.moved,'days moving','\u26A1')+
+   strkCard(TESTS.food,'days logged','\uD83D\uDD25','food')+
+   strkCard(TESTS.onPlan,'days on target','\uD83C\uDFAF','onPlan')+
+   strkCard(TESTS.moved,'days moving','\u26A1','moved')+
   '</div>'+strkNudge(TESTS.food,'logging','log a meal')+'</div>';
 
  h+='<div class="sec"><div class="sechead"><h2>Your month</h2>'+
@@ -2706,12 +3537,6 @@ function setupPage(){
    return '<button class="chip'+(D.settings.lang===x[0]?' on':'')+'" onclick="setLang(\''+x[0]+'\')">'+
     x[1]+'</button>';}).join('')+'</div></div></div>';
 
- h+='<div class="sec"><div class="sechead"><h2>Category limits</h2></div><div class="list">'+
-  D.budgets.map(function(b,i){
-   return '<div class="row"><div class="tile" style="background:'+col(b.cat)+'1A;color:'+col(b.cat)+'">'+ico(b.cat)+'</div>'+
-    '<div class="nm"><b>'+esc(b.cat)+'</b></div>'+
-    '<input type="number" value="'+b.limit+'" style="width:92px;margin:0;text-align:right;padding:9px" '+
-    'onchange="D.budgets['+i+'].limit=Number(this.value)||0;save();draw()"></div>';}).join('')+'</div></div>';
  h+='<div class="sec"><div class="sechead"><h2>AI key</h2><span class="more">'+
   (hasKey()?'added':'not set')+'</span></div><div class="card">'+
   (blocked()?'<div class="ban amber" style="margin-top:0"><span class="ic">!</span><div>'+
@@ -2734,12 +3559,19 @@ function setupPage(){
   (hasKey()?'<button class="go ghost" onclick="testKey()">Test it</button>'+
    '<button class="go red" onclick="D.ai.key=\'\';save();draw();toast(\'Key removed\')">Remove key</button>':'')+
   '</div></div>';
+ h+='<div class="sec"><div class="sechead"><h2>Lock</h2><span class="more">'+
+  (D.settings.pin?'PIN on':'off')+'</span></div><div class="card">'+
+  '<div style="font-size:12.5px;color:var(--mut);line-height:1.5">A PIN each time you open the app. '+
+  'This phone only.</div>'+
+  '<button class="go ghost" onclick="pinSheet()">'+(D.settings.pin?'Change or remove it':'Set a PIN')+
+  '</button></div></div>';
  h+='<div class="sec"><div class="sechead"><h2>Backup</h2><span class="more" id="stormode">…</span></div>'+
   '<div class="card">'+
   '<div style="font-size:12.5px;color:var(--mut);line-height:1.5">Everything lives on this phone. '+
   (D.settings.backedUp?'Last backup '+(backupAge()===0?'today':backupAge()+' days ago')+'.'
                       :'<b>You have not taken a backup yet.</b>')+'</div>'+
-  '<button class="go" onclick="exportData()">Copy my data</button>'+
+  '<button class="go" onclick="backupFile()">Save a backup file</button>'+
+  '<button class="go ghost" onclick="exportData()">Copy my data as text</button>'+
   '<button class="go ghost" onclick="importData()">Restore a backup</button>'+
   '<button class="go ghost" onclick="exportCsv()">Export CSV</button>'+
   '<button class="go red" onclick="wipe()">Erase everything</button></div></div>';
@@ -2833,19 +3665,170 @@ function saveEntry(){
 }
 function editTx(id){
  var t=D.tx.filter(function(x){return x.id===id;})[0];if(!t)return;
- openSheet('<div class="grab"></div><h3>'+esc(t.note||t.cat||'Entry')+'</h3>'+
-  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+R(t.amount)+' · '+dshort(t.date)+'</div>'+
-  (t.type==='out'?'<div class="mic" style="margin-top:15px">Category</div><select id="c2">'+
+ var accSel=function(id2,val){return '<select id="'+id2+'">'+D.accounts.map(function(a){
+  return '<option value="'+a.id+'"'+(a.id===val?' selected':'')+'>'+esc(a.name)+'</option>';}).join('')+'</select>';};
+ var mid='';
+ if(t.type==='out')
+  mid='<div class="mic" style="margin-top:15px">Category</div><select id="e_cat">'+
    CATS.map(function(c){return '<option'+(c===t.cat?' selected':'')+'>'+c+'</option>';}).join('')+'</select>'+
-   '<button class="go" onclick="recat(\''+id+'\')">Change category</button>':'')+
-  '<button class="go red" onclick="delTx(\''+id+'\')">Delete</button>'+
-  '<button class="go ghost" onclick="closeSheet()">Close</button>');
-}
-function recat(id){var t=D.tx.filter(function(x){return x.id===id;})[0];
- t.cat=document.getElementById('c2').value;save();closeSheet();draw();}
-function delTx(id){if(!confirm('Delete this entry?'))return;
- D.tx=D.tx.filter(function(t){return t.id!==id;});save();closeSheet();draw();}
+   '<div class="mic" style="margin-top:15px">Paid from</div>'+accSel('e_acct',t.acct);
+ else if(t.type==='in')
+  mid='<div class="mic" style="margin-top:15px">Earned from</div><select id="e_src">'+
+   D.sources.map(function(x){return '<option value="'+x.id+'"'+(x.id===t.src?' selected':'')+'>'+
+    x.icon+'  '+esc(x.name)+'</option>';}).join('')+'</select>'+
+   '<div class="mic" style="margin-top:15px">Into</div>'+accSel('e_acct',t.acct);
+ else
+  mid='<div class="mic" style="margin-top:15px">From</div>'+accSel('e_from',t.from)+
+   '<div class="mic" style="margin-top:15px">To</div>'+accSel('e_to',t.to);
 
+ openSheet('<div class="grab"></div><h3>'+esc(t.note||t.cat||'Entry')+'</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
+   (t.type==='in'?'Money in':t.type==='out'?'Money out':'Moved between accounts')+'</div>'+
+  '<div class="mic" style="margin-top:15px">Amount</div>'+
+  '<input id="e_amt" type="number" inputmode="decimal" value="'+t.amount+'">'+
+  '<div class="mic" style="margin-top:15px">Note</div>'+
+  '<input id="e_note" value="'+esc(t.note||'')+'" placeholder="What was it for">'+
+  mid+
+  '<div class="mic" style="margin-top:15px">Date</div>'+
+  '<input id="e_date" type="date" value="'+t.date+'">'+
+  '<button class="go" onclick="saveTx(\''+id+'\')">Save changes</button>'+
+  '<button class="go red" onclick="delTx(\''+id+'\')">Delete this entry</button>'+
+  '<button class="go ghost" onclick="closeSheet()">Cancel</button>');
+}
+function saveTx(id){
+ var t=D.tx.filter(function(x){return x.id===id;})[0];if(!t)return;
+ var amt=Number((document.getElementById('e_amt')||{}).value);
+ if(!amt||amt<=0)return toast('The amount has to be more than zero.');
+ mark('the change to '+(t.note||t.cat||'that entry'));
+ t.amount=amt;
+ t.note=((document.getElementById('e_note')||{}).value||'').trim();
+ var d=(document.getElementById('e_date')||{}).value;
+ if(d)t.date=d;
+ if(t.type==='out'){t.cat=(document.getElementById('e_cat')||{}).value;
+  t.acct=(document.getElementById('e_acct')||{}).value;}
+ else if(t.type==='in'){t.src=(document.getElementById('e_src')||{}).value;
+  t.acct=(document.getElementById('e_acct')||{}).value;}
+ else{
+  var f=(document.getElementById('e_from')||{}).value,o=(document.getElementById('e_to')||{}).value;
+  if(f===o)return toast('Pick two different accounts.');
+  t.from=f;t.to=o;
+ }
+ save();closeSheet();draw();toast('Saved.');
+}
+function delTx(id){
+ var t=D.tx.filter(function(x){return x.id===id;})[0];
+ if(!confirm('Delete this entry?'))return;
+ mark('deleting '+((t&&(t.note||t.cat))||'that entry'));
+ Object.keys(D.paid).forEach(function(m){
+  Object.keys(D.paid[m]).forEach(function(k){
+   if(D.paid[m][k].txid===id){
+    var dd=D.debts.filter(function(x){return x.id===k;})[0];
+    if(dd)dd.left=dd.left+(D.paid[m][k].amount||0);
+    delete D.paid[m][k];
+   }});});
+ D.tx=D.tx.filter(function(x){return x.id!==id;});
+ save();closeSheet();draw();toast('Deleted.');
+}
+
+/* ===== food item editor ===== */
+function editFood(d,id){
+ var f=(D.food[d]||[]).filter(function(x){return x.id===id;})[0];if(!f)return;
+ var perK=f.qty?f.kcal/f.qty:f.kcal, perP=f.qty?(f.pro||0)/f.qty:(f.pro||0);
+ window._fe={d:d,id:id,perK:perK,perP:perP};
+ openSheet('<div class="grab"></div><h3>'+esc(f.name)+'</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
+   Math.round(perK)+' kcal and '+(Math.round(perP*10)/10)+'g protein per '+esc(f.unit||'serving')+'.</div>'+
+  '<div class="mic" style="margin-top:15px">How many</div>'+
+  '<div class="chips" id="qchips">'+[0.5,1,2,3,4,5,6].map(function(q){
+   return '<button class="chip'+(f.qty===q?' on':'')+'" onclick="setQty('+q+')">'+q+'</button>';}).join('')+
+  '</div>'+
+  '<input id="f_qty" type="number" step="0.5" inputmode="decimal" value="'+f.qty+'" oninput="qtyEcho()">'+
+  '<div id="f_echo" style="font-size:12.5px;color:var(--g2);margin-top:9px;font-weight:600">'+
+   Math.round(f.kcal)+' kcal \u00B7 '+(f.pro||0)+'g protein</div>'+
+  '<div class="mic" style="margin-top:15px">Or set them yourself</div>'+
+  '<div style="display:flex;gap:9px">'+
+   '<input id="f_kcal" type="number" value="'+Math.round(f.kcal)+'" placeholder="kcal">'+
+   '<input id="f_pro" type="number" step="0.1" value="'+(f.pro||0)+'" placeholder="protein g">'+
+  '</div>'+
+  '<div class="mic" style="margin-top:15px">Which meal</div>'+
+  '<select id="f_meal">'+MEALS.map(function(m){
+   return '<option value="'+m.id+'"'+(m.id===f.meal?' selected':'')+'>'+m.name+'</option>';}).join('')+'</select>'+
+  '<div class="mic" style="margin-top:15px">Name</div>'+
+  '<input id="f_name" value="'+esc(f.name)+'">'+
+  '<button class="go" onclick="saveFood()">Save changes</button>'+
+  '<button class="go red" onclick="delFood(\''+d+'\',\''+id+'\')">Remove it</button>'+
+  '<button class="go ghost" onclick="closeSheet()">Cancel</button>');
+}
+function setQty(q){
+ var el=document.getElementById('f_qty');if(el){el.value=q;qtyEcho();}
+ Array.prototype.forEach.call(document.querySelectorAll('#qchips .chip'),function(b){
+  b.classList.toggle('on',Number(b.textContent)===q);});
+}
+function qtyEcho(){
+ var fe=window._fe;if(!fe)return;
+ var q=Number((document.getElementById('f_qty')||{}).value)||0;
+ var k=Math.round(fe.perK*q),p=Math.round(fe.perP*q*10)/10;
+ var kc=document.getElementById('f_kcal'),pr=document.getElementById('f_pro');
+ if(kc)kc.value=k;
+ if(pr)pr.value=p;
+ var e=document.getElementById('f_echo');
+ if(e)e.textContent=k+' kcal \u00B7 '+p+'g protein';
+}
+function saveFood(){
+ var fe=window._fe;if(!fe)return;
+ var f=(D.food[fe.d]||[]).filter(function(x){return x.id===fe.id;})[0];if(!f)return;
+ mark('the change to '+f.name);
+ f.qty=Number((document.getElementById('f_qty')||{}).value)||1;
+ f.kcal=Math.round(Number((document.getElementById('f_kcal')||{}).value)||0);
+ f.pro=Math.round((Number((document.getElementById('f_pro')||{}).value)||0)*10)/10;
+ f.meal=(document.getElementById('f_meal')||{}).value;
+ f.name=((document.getElementById('f_name')||{}).value||f.name).trim();
+ save();closeSheet();draw();toast('Updated \u2014 '+f.qty+' '+f.name.toLowerCase()+', '+f.kcal+' kcal');
+}
+
+/* ===== activity editor ===== */
+function editAct(d,id){
+ var a=(D.act[d]||[]).filter(function(x){return x.id===id;})[0];if(!a)return;
+ window._ae={d:d,id:id};
+ openSheet('<div class="grab"></div><h3>'+esc(actLabel(a))+'</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">Burned about '+N(a.kcal)+' kcal.</div>'+
+  '<div class="mic" style="margin-top:15px">'+(a.kind==='steps'?'Steps':'Minutes')+'</div>'+
+  '<input id="a_val" type="number" inputmode="numeric" value="'+a.value+'">'+
+  '<div class="mic" style="margin-top:15px">Calories burned</div>'+
+  '<input id="a_kcal" type="number" value="'+a.kcal+'">'+
+  '<button class="go" onclick="saveAct2()">Save changes</button>'+
+  '<button class="go red" onclick="delAct(\''+d+'\',\''+id+'\')">Remove it</button>'+
+  '<button class="go ghost" onclick="closeSheet()">Cancel</button>');
+}
+function saveAct2(){
+ var ae=window._ae;if(!ae)return;
+ var a=(D.act[ae.d]||[]).filter(function(x){return x.id===ae.id;})[0];if(!a)return;
+ mark('the change to '+actLabel(a));
+ var v=Number((document.getElementById('a_val')||{}).value)||0;
+ var k=Number((document.getElementById('a_kcal')||{}).value);
+ a.value=v;
+ a.kcal=Math.round(isNaN(k)||!k?actKcal(a):k);
+ save();closeSheet();draw();toast('Updated.');
+}
+
+function backupFile(){
+ try{
+  var blob=new Blob([JSON.stringify(D)],{type:'application/json'});
+  var name='momentum-backup-'+today()+'.json';
+  var f=new File([blob],name,{type:'application/json'});
+  if(navigator.canShare&&navigator.canShare({files:[f]})){
+   navigator.share({files:[f],title:name}).then(function(){
+    D.settings.backedUp=today();save();}).catch(function(){});
+   return;
+  }
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);a.download=name;
+  document.body.appendChild(a);a.click();
+  setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},800);
+  D.settings.backedUp=today();save();
+  toast('Saved to your downloads.');
+ }catch(e){toast('Could not make the file \u2014 use Copy my data instead.');}
+}
 function exportData(){
  openSheet('<div class="grab"></div><h3>Your data</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">Copy this somewhere safe.</div>'+
@@ -2867,8 +3850,7 @@ function backupNag(){
  return '<div class="ban amber"><span class="ic">⚑</span><div>'+
   (n>900?'<b>You have never taken a backup.</b>':'<b>Last backup was '+n+' days ago.</b>')+
   ' If this phone clears its storage, everything here goes with it. '+
-  '<span style="text-decoration:underline" onclick="go(\'setup\');setTimeout(exportData,250)">'+
-  'Take one now</span>.</div></div>';
+  '<span style="text-decoration:underline" onclick="backupFile()">Take one now</span>.</div></div>';
 }
 function importData(){
  openSheet('<div class="grab"></div><h3>Restore</h3>'+

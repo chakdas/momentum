@@ -1,5 +1,6 @@
+
 /* Momentum offline shell. Bump CACHE whenever index.html changes. */
-var CACHE = 'momentum-v9';
+var CACHE = 'momentum-v10';
 var SHELL = ['./', './index.html', './manifest.json',
              './icon-192.png', './icon-512.png', './icon-maskable.png', './apple-touch-icon.png'];
  
