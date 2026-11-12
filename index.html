@@ -1259,7 +1259,9 @@ function apiErr(status,text){
   return 'Google refused the key. Open aistudio.google.com/apikey and check it is still there, '+
    'and that the Generative Language API is on for its project.';
  if(status===429)
-  return 'You have hit the free daily limit. Try again tomorrow.';
+  return 'Too many requests just now, or the free daily limit is reached. Wait a little.';
+ if(status===503)
+  return 'Google\'s servers are busy. Nothing wrong with your key.';
  return 'Google said: '+(msg||('HTTP '+status));
 }
 function netErr(e){
@@ -1270,8 +1272,18 @@ function netErr(e){
    : 'Could not reach Google. Check the connection and try again.';
  return m||'Something went wrong talking to Google.';
 }
-function gemini(parts,cb){
+/* Google's free tier gets busy. Rather than handing him an error, wait a moment,
+   try again, and if that model stays jammed move to the next one. */
+function busyErr(m){return /overload|high demand|unavailable|try again later|503/i.test(m||'');}
+function nextModel(){
+ var cur=D.ai.model,i=AI_TRY.indexOf(cur);
+ var n=AI_TRY[(i<0?0:i+1)];
+ if(n&&n!==cur){D.ai.model=n;save();return n;}
+ return null;
+}
+function gemini(parts,cb,attempt){
  if(!hasKey())return cb(null,'no-key');
+ attempt=attempt||0;
  pickModel(function(model,err){
   if(!model)return cb(null,err);
   var url=GBASE+'models/'+model+':generateContent'+(D.ai.qp?('?key='+encodeURIComponent(D.ai.key)):'');
@@ -1284,7 +1296,9 @@ function gemini(parts,cb){
     generationConfig:{responseMimeType:'application/json',temperature:0.2}})
   }).then(function(r){
    return r.text().then(function(t){
-    if(r.status===404){D.ai.model='';save();throw new Error('__retry__');}
+    if(r.status===404){D.ai.model='';save();throw new Error('__model__');}
+    if(r.status===503||r.status===429||busyErr(t)){
+     var e2=new Error(apiErr(r.status,t));e2.busy=true;throw e2;}
     if(!r.ok)throw new Error(apiErr(r.status,t));
     return JSON.parse(t);});
   }).then(function(j){
@@ -1294,8 +1308,18 @@ function gemini(parts,cb){
    try{cb(JSON.parse(txt),null);}
    catch(e){cb(null,'The AI replied in a shape the app could not read.');}
   }).catch(function(e){
-   if(e&&e.message==='__retry__')return gemini(parts,cb);
-   cb(null,netErr(e));
+   if(e&&e.message==='__model__')return gemini(parts,cb,attempt);
+   if(e&&e.busy&&attempt<4){
+    /* first two: wait and ask the same model again. then: switch models. */
+    if(attempt>=2)nextModel();
+    var wait=[900,2200,700,2500][attempt]||2000;
+    if(attempt===0)toast('Google is busy \u2014 trying again\u2026');
+    return setTimeout(function(){gemini(parts,cb,attempt+1);},wait);
+   }
+   cb(null,e&&e.busy
+    ?'Google\'s free servers are overloaded right now. It is not your key and not the app \u2014 '+
+     'wait a few minutes and try again.'
+    :netErr(e));
   });
  });
 }
@@ -2809,7 +2833,7 @@ function runActions(list,thumb){
 }
 
 /* ===== self test: turns guesswork into facts ===== */
-var APP_VERSION='2026-11-12a';
+var APP_VERSION='2026-11-12b';
 function diagSheet(){
  openSheet('<div class="grab"></div><h3>Self test</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
@@ -2842,7 +2866,7 @@ function copyDiag(){
 }
 function runDiag(){
  DIAG=[];
- diagLine('App version',APP_VERSION==='2026-11-12a'?'ok':'warn',APP_VERSION);
+ diagLine('App version',APP_VERSION==='2026-11-12b'?'ok':'warn',APP_VERSION);
  var where=location.hostname||'local file';
  diagLine('Running from',blocked()?'no':'ok',
   blocked()?where+' \u2014 inside Claude, outside calls are blocked here':where);
@@ -4127,7 +4151,9 @@ function setupPage(){
     (D.ai.key.length<30?' — <b style="color:var(--red)">that looks too short, the paste was probably cut</b>':'')+
     (D.ai.model?'<br>model: '+esc(D.ai.model):'')+
     ' <span style="text-decoration:underline;color:var(--ink)" onclick="showKey()">show</span></div>':'')+
-  '<input type="password" id="aik" placeholder="'+(hasKey()?'Paste a new key to replace it':'Paste your key')+'">'+
+  '<input type="text" id="aik" autocomplete="off" autocorrect="off" autocapitalize="off" '+
+   'spellcheck="false" style="-webkit-text-security:disc;text-security:disc" '+
+   'placeholder="'+(hasKey()?'Paste a new key to replace it':'Paste your key')+'">'+
   '<button class="go" onclick="saveKey()">Save key</button>'+
   (hasKey()?'<button class="go ghost" onclick="testKey()">Test it</button>'+
    '<button class="go red" onclick="D.ai.key=\'\';save();draw();toast(\'Key removed\')">Remove key</button>':'')+
