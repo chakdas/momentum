@@ -251,7 +251,7 @@ input,select,textarea{width:100%;padding:13px 14px;border:1px solid var(--line);
   <div class="hint" id="vohint"></div>
   <button class="stop" onclick="stopListening()">Done</button>
 </div>
-<input type="file" id="cam" accept="image/*" capture="environment" style="display:none">
+<input type="file" id="cam" accept="image/*" style="display:none">
 
 <script>
 /* ================================================================
@@ -269,6 +269,7 @@ var SEED={
   {id:'rapido',name:'Rapido',  icon:'🏍'},
   {id:'uber',  name:'Uber',    icon:'🚗'},
   {id:'swiggy',name:'Swiggy',  icon:'🛵'},
+  {id:'porter',name:'Porter',  icon:'🚚'},
   {id:'other', name:'Other',   icon:'✦'}
  ],
  debts:[],
@@ -276,8 +277,8 @@ var SEED={
  savings:[],
  health:{weightStart:75,weightTarget:70,height:170,age:30,water:3000,protein:0,
          eat:0,burn:400,steps:8000,autoTarget:true},
- tx:[], paid:{}, hlog:{}, food:{}, act:{}, session:null,
- settings:{pin:'',incomeKnown:0,name:'',lang:'auto',heard:'',misses:0,ready:0}, ai:{key:'',model:'',qp:0}, answered:{}
+ tx:[], paid:{}, hlog:{}, food:{}, act:{}, fuel:[], odo:{}, lent:[],
+ settings:{pin:'',bio:'',petrol:107.76,incomeKnown:0,name:'',lang:'auto',heard:'',misses:0,ready:0}, ai:{key:'',model:'',qp:0}, answered:{}
 };
 
 var CC={Food:['#C2622F','🍽'],Travel:['#3F7FA6','🛺'],Fuel:['#C98A2B','⛽'],
@@ -563,6 +564,8 @@ function balance(id){
  D.tx.forEach(function(t){
   if(t.type==='in'&&t.acct===id)b+=t.amount;
   else if(t.type==='out'&&t.acct===id)b-=t.amount;
+  else if(t.type==='lend'&&t.acct===id)b-=t.amount;
+  else if(t.type==='repay'&&t.acct===id)b+=t.amount;
   else if(t.type==='move'){if(t.from===id)b-=t.amount;if(t.to===id)b+=t.amount;}});
  return b;
 }
@@ -1083,6 +1086,18 @@ function handle(text,thumb){
  var t=clean(text),d=today();
  if(!t)return null;
 
+ var m2=t.match(/(?:petrol|fuel|diesel)\s*(?:rs\.?\s*)?([\d,]+)\s*(?:at|@|\u0b85\u0b9f\u0bbf)?\s*([\d,]{4,7})\s*(?:km)?/);
+ if(m2){
+  var fr2=addFuel(Number(m2[2].replace(/,/g,'')),Number(m2[1].replace(/,/g,'')),0);
+  if(fr2)return 'Petrol '+R(fr2.rupees)+' at '+N(fr2.km)+' km';
+ }
+ m2=t.match(/(?:start(?:ed)?|begin)\D{0,25}?([\d,]{4,7})\s*(?:km)?/);
+ if(m2){var k2=Number(m2[1].replace(/,/g,''));setOdo(d,'start',k2);
+  return 'Odometer start '+N(k2)+' km';}
+ m2=t.match(/(?:end(?:ed)?|finish(?:ed)?|stop(?:ped)?)\D{0,25}?([\d,]{4,7})\s*(?:km)?/);
+ if(m2){var k3=Number(m2[1].replace(/,/g,''));setOdo(d,'end',k3);
+  return 'Odometer end '+N(k3)+' km'+(kmOn(d)?' \u2014 '+N(kmOn(d))+' km today':'');}
+
  var ac=parseActivity(t);
  if(ac){var k=actKcal(ac);addAct(d,ac.kind,ac.value,k);
   return actLabel(ac)+' — about '+k+' kcal burned';}
@@ -1167,8 +1182,11 @@ function listen(){
   };
   rec.onerror=function(e){
    document.getElementById('vo').classList.remove('on');
-   toast(e.error==='not-allowed'?'Microphone permission is off for this page.'
-        :e.error==='no-speech'?'Did not catch that.':'Voice error: '+e.error);
+   toast(e.error==='not-allowed'?'Microphone is blocked. Chrome \u2192 site settings \u2192 Microphone \u2192 Allow.'
+        :e.error==='no-speech'?'Did not catch anything \u2014 speak right after tapping.'
+        :e.error==='network'?'Voice needs the internet and could not reach it. Try again on wifi.'
+        :e.error==='audio-capture'?'No microphone found.'
+        :'Voice stopped: '+e.error);
   };
   rec.onend=function(){if(document.getElementById('vo').classList.contains('on'))stopListening();};
   rec.start();
@@ -1181,9 +1199,10 @@ function stopListening(){
  var t=recText.trim();recText='';
  if(!t)return;
  if(TAB==='chat'){heardOk();chatSend(t);return;}
+ mark('"'+t.slice(0,40)+'"');
  if(hasKey()){heardOk();aiText(t,MODE==='health'?mealNow():null);return;}
  var r=handle(t);
- if(r){heardOk();draw();toast(r);return;}
+ if(r){heardOk();draw();toastUndo(r);return;}
  toast(heardMiss()?'Did not catch that — switching language. Tap the mic and say it again.'
                   :'Did not catch that. Say it again, or type it.');
 }
@@ -1548,13 +1567,14 @@ function draw(){
  if(TAB==='chat'){chrome(true);document.getElementById('app').innerHTML=chatPage();return;}
  if(lockNeeded()){
   chrome(false);document.getElementById('app').innerHTML=lockScreen();
-  setTimeout(function(){var i=document.getElementById('pin_in');if(i)i.focus();},120);
+  if(D.settings.bio&&!window._bioTried){window._bioTried=1;setTimeout(bioPrompt,350);}
+  else setTimeout(function(){var i=document.getElementById('pin_in');if(i)i.focus();},120);
   return;
  }
  chrome(true);
  document.getElementById('app').innerHTML = MODE==='finance'
   ? (TAB==='report'?finReport():TAB==='debt'?debtPage():TAB==='save'?savePage():
-     TAB==='gap'?gapPage():TAB==='setup'?setupPage():finHome())
+     TAB==='gap'?gapPage():TAB==='bike'?bikePage():TAB==='setup'?setupPage():finHome())
   : (TAB==='food'?foodPage():TAB==='move'?movePage():TAB==='hreport'?healthReport():healthHome());
 }
 function header(sub){
@@ -1590,8 +1610,9 @@ function runQuick(){
  var el=document.getElementById('qq');if(!el)return;
  var t=el.value.trim();if(!t)return;
  el.value='';qTick();
+ mark('"'+t.slice(0,40)+'"');
  var r=handle(t);
- if(r){draw();toast(r);}
+ if(r){draw();toastUndo(r);}
  else aiText(t,MODE==='health'?mealNow():null);
 }
 
@@ -1669,15 +1690,15 @@ function finHome(){
    '<div>Just changed something by mistake?</div>'+
    '<button class="chip" onclick="undo()">Undo</button></div>';
 
- var ls=liveSession();
- if(ls)
-  h+='<div class="ask" onclick="stopSessionSheet()"><div class="q">'+
-   '<b>'+esc(src(ls.src).name)+' \u2014 '+fmtMins(sessionMins())+' so far.</b>'+
-   '<br><span style="opacity:.75;font-size:12.5px">Tap when you are back to log what you made.</span>'+
-   '</div></div>';
- else
-  h+='<button class="go ghost" style="margin-top:13px" onclick="rideSheet()">'+
-   '\uD83C\uDFCD Start a riding session</button>';
+ var fs0=fuelStats();
+ h+='<div class="sec"><div class="card" onclick="go(\'bike\')">'+
+  '<div style="display:flex;align-items:center;gap:12px">'+
+  '<div class="tile" style="background:#FAF3EC;color:#C98A2B">\u26FD</div>'+
+  '<div style="flex:1"><b style="font-size:14px">Your bike</b>'+
+  '<div style="font-size:11.5px;color:var(--mut);margin-top:3px">'+
+   (fs0.avg?fs0.avg+' km/l \u00B7 \u20B9'+fs0.perKm+' a km \u00B7 '+R(fs0.spent)+' on petrol'
+    :'Add a fill-up with the odometer to start')+'</div></div>'+
+  '<span style="color:var(--mut);font-size:18px">\u203A</span></div></div></div>';
 
  var g0=gap();
  if(g0.income&&(g0.committed||g0.saving))
@@ -1729,6 +1750,11 @@ function finHome(){
  return h+'<div style="height:16px"></div></div>';
 }
 function txRow(t){
+ if(t.type==='lend'||t.type==='repay')
+  return '<div class="row" onclick="lentSheet(\''+(t.lentId||'')+'\')">'+
+   '<div class="tile" style="background:#F0EFE9">'+(t.type==='lend'?'\u2192':'\u2190')+'</div>'+
+   '<div class="nm"><b>'+esc(t.note||'Lent')+'</b><i>'+dshort(t.date)+'</i></div>'+
+   '<div class="amt '+(t.type==='repay'?'grn':'')+'">'+(t.type==='repay'?'+':'\u2212')+R(t.amount)+'</div></div>';
  if(t.type==='move')
   return '<div class="row" onclick="editTx(\''+t.id+'\')"><div class="tile" style="background:#F0EFE9">↔</div>'+
    '<div class="nm"><b>Moved money</b><i>'+esc(acc(t.from).name)+' → '+esc(acc(t.to).name)+' · '+dshort(t.date)+'</i></div>'+
@@ -1746,14 +1772,38 @@ function txRow(t){
 }
 function finReport(){
  var h='<div class="wrap">'+header('Money reports');
- h+='<div class="subs">'+[['spending','Spending'],['income','Income'],['days','Day by day']]
+ h+='<div class="subs">'+[['cal','Calendar'],['spending','Spending'],['income','Income'],['days','Day by day']]
   .map(function(s){return '<button class="'+(SUB===s[0]?'on':'')+'" onclick="SUB=\''+s[0]+'\';draw()">'+s[1]+'</button>';}).join('')+'</div>';
  h+='<div class="subs">'+[['day','Today'],['week','7 days'],['month','This month'],['30','30 days']]
   .map(function(s){return '<button class="'+(SPAN===s[0]?'on':'')+'" onclick="SPAN=\''+s[0]+'\';draw()">'+s[1]+'</button>';}).join('')+'</div>';
  h+='<button class="go ghost" style="margin-top:13px" onclick="reviewSheet()">'+
   'The whole month, looked back on \u203A</button>';
- h+=SUB==='income'?incomeView():SUB==='days'?daysView():spendingView();
+ h+=SUB==='cal'?calView():SUB==='income'?incomeView():SUB==='days'?daysView():spendingView();
  return h+'<div style="height:16px"></div></div>';
+}
+function calView(){
+ var r=range('month'),mIn=sum(txIn('month','in')),mOut=sum(txIn('month','out'));
+ var best=null,worst=null;
+ Object.keys({}).length;
+ for(var i=0;i<60;i++){
+  var d=dayAgo(i);
+  if(d.slice(0,7)!==mcalMonth())continue;
+  if(!inDay(d)&&!outDay(d))continue;
+  var n=netOn(d);
+  if(best===null||n>best.n)best={d:d,n:n};
+  if(worst===null||n<worst.n)worst={d:d,n:n};
+ }
+ var h='<div class="sec"><div class="sechead"><h2>Day by day</h2>'+
+  '<span class="more">tap any day</span></div>'+moneyCalendar()+'</div>';
+ if(best&&worst&&best.d!==worst.d)
+  h+='<div class="sec"><div class="pair">'+
+   '<div class="card" onclick="moneyDay(\''+best.d+'\')"><div class="mic">Best day</div>'+
+    '<div class="v grn" style="font-size:18px">'+(best.n>=0?'+':'\u2212')+R(best.n)+'</div>'+
+    '<div style="font-size:11px;color:var(--mut);margin-top:4px">'+dshort(best.d)+'</div></div>'+
+   '<div class="card" onclick="moneyDay(\''+worst.d+'\')"><div class="mic">Worst day</div>'+
+    '<div class="v red" style="font-size:18px">'+(worst.n>=0?'+':'\u2212')+R(worst.n)+'</div>'+
+    '<div style="font-size:11px;color:var(--mut);margin-top:4px">'+dshort(worst.d)+'</div></div></div></div>';
+ return h;
 }
 function spanName(){return SPAN==='day'?'today':SPAN==='week'?'last 7 days':SPAN==='month'?monthName():'last 30 days';}
 function spanDays(){return SPAN==='day'?1:SPAN==='week'?7:SPAN==='month'?new Date().getDate():30;}
@@ -1792,18 +1842,20 @@ function incomeView(){
    '<div class="nm"><b>'+esc(so.name)+'</b><i>'+p+'% of income</i>'+
    '<div class="bar"><i style="width:'+p+'%;background:var(--g2)"></i></div></div>'+
    '<div class="amt grn">'+R(s.value)+'</div></div>';}).join('')+'</div>';
- var rs=rideStats(SPAN);
- if(rs.length)
-  h+='<div class="sec"><div class="sechead"><h2>What an hour is worth</h2>'+
-   '<span class="more">after petrol</span></div><div class="list">'+rs.map(function(x){
-    return '<div class="row"><div class="tile" style="background:var(--mint)">'+src(x.src).icon+'</div>'+
-     '<div class="nm"><b>'+esc(src(x.src).name)+'</b><i>'+fmtMins(x.mins)+' over '+x.trips+' trip'+
-      (x.trips===1?'':'s')+' \u00B7 '+R(x.net)+' kept</i></div>'+
-     '<div style="text-align:right"><div class="amt">'+R(x.perHour)+'</div>'+
-      '<div style="font-size:10px;color:var(--mut)">an hour</div></div></div>';}).join('')+'</div>'+
-   (rs.length>1?'<div class="ban plain"><span class="ic">\u2139</span><div><b>'+
-    esc(src(rs[0].src).name)+'</b> pays best per hour of the ones you logged.</div></div>':'')+
-   '</div>';
+ var kmS=kmIn(SPAN),fs1=fuelStats();
+ if(kmS)
+  h+='<div class="sec"><div class="sechead"><h2>On the bike</h2>'+
+   '<span class="more">'+spanName()+'</span></div><div class="trio">'+
+   '<div class="card"><div class="mic">Ridden</div><div class="v">'+N(kmS)+'</div>'+
+    '<div style="font-size:10.5px;color:var(--mut);margin-top:3px">km</div></div>'+
+   '<div class="card"><div class="mic">Petrol</div><div class="v">'+
+    R(kmS*(fs1.perKm||0))+'</div>'+
+    '<div style="font-size:10.5px;color:var(--mut);margin-top:3px">at \u20B9'+(fs1.perKm||0)+'/km</div></div>'+
+   '<div class="card"><div class="mic">Kept</div><div class="v grn">'+
+    R(Math.max(0,sum(txIn(SPAN,'in').filter(function(t){return t.src!=='salary';}))-kmS*(fs1.perKm||0)))+
+    '</div><div style="font-size:10.5px;color:var(--mut);margin-top:3px">after petrol</div></div>'+
+   '</div></div>';
+
  var g=gigNet(SPAN);
  if(g.earn)h+='<div class="ban"><span class="ic">🏍</span><div>Riding brought in <b>'+R(g.earn)+
   '</b> and petrol cost '+R(g.fuel)+'. You actually kept <b>'+R(g.net)+'</b>.</div></div>';
@@ -2012,7 +2064,7 @@ function savePage(){
    'one of your accounts \u2014 an emergency fund in one, money for later in another. Give it a daily '+
    'amount and the app asks you for it every day and counts the streak.</div></div>'+
    '<button class="go" onclick="potSheet(null)">Create the first pot</button>';
-  return h+'<div style="height:16px"></div></div>';
+  return h+lentBlock()+'<div style="height:16px"></div></div>';
  }
 
  list.forEach(function(p){
@@ -2049,6 +2101,8 @@ function savePage(){
      'Another amount</button></div></div></div>';
  });
  h+='</div>';
+
+ h+=lentBlock();
 
  var moves=D.tx.filter(function(t){
   return t.type==='move'&&list.some(function(p){return p.acct===t.to;});}).slice(-10).reverse();
@@ -2516,6 +2570,14 @@ function ctxBlock(){
   return x.name+' '+x.left+' left at '+x.emi+'/month (id='+x.id+')';}).join('; '));
  if(pots().length)L.push('savings pots: '+pots().map(function(p){
   return p.name+' has '+potSaved(p)+(p.target?' of '+p.target:'')+', '+(p.daily||0)+'/day (id='+p.id+')';}).join('; '));
+ var fs3=fuelStats();
+ if(fs3.fills)L.push('bike: '+(fs3.avg?fs3.avg+' km/l average, ':'')+N(fs3.totDist)+
+  ' km on record, '+fs3.spent+' spent on petrol, about '+fs3.perKm+' a km. '+
+  'Petrol price set to '+petrolPrice()+' a litre.');
+ if(kmOn(d))L.push('ridden '+kmOn(d)+' km today.');
+ var lo=lentOut();
+ if(lo)L.push('lent out and not back: '+(D.lent||[]).filter(function(x){return !x.back;})
+  .map(function(x){return x.who+' '+x.amount;}).join(', ')+' (total '+lo+').');
  L.push('--- HABITS ---');
  L.push('streaks: logging food '+streakOf(TESTS.food).n+'d, on calorie target '+streakOf(TESTS.onPlan).n+
   'd, moving '+streakOf(TESTS.moved).n+'d, logging money '+streakOf(TESTS.money).n+
@@ -2546,12 +2608,18 @@ var CHAT_RULES =
  '{"a":"weight","value":0}  {"a":"water","ml":0}\n'+
  '{"a":"editfood","id":"","qty":0,"kcal":0,"protein_g":0,"meal":""}  {"a":"delfood","id":""}\n'+
  '{"a":"paid","id":""}  {"a":"unpaid","id":""}  {"a":"save","pot":"","amount":0}\n'+
+ '{"a":"fuel","km":0,"rupees":0}  (a petrol fill-up with the odometer reading)\n'+
+ '{"a":"odo","when":"start|end","km":0}  (odometer at the start or end of a day of riding)\n'+
+ '{"a":"lend","who":"","amount":0}  {"a":"lentback","who":""}\n'+
  'Use the real ids from the context when changing or removing something.\n'+
  'If a quantity or portion genuinely changes the number and you cannot tell, put NO action in "do", '+
  'ask the one question in "say", and put two to four tappable answers in "ask". Otherwise leave "ask" empty '+
  'and make a sensible estimate rather than interrogating him.\n'+
  'For questions about his numbers, answer from the context only. Never invent a figure. If the context '+
  'does not contain it, say you do not have it.\n'+
+ 'He rides for Rapido, Uber, Swiggy and Porter. "started the day at 3408" or "started riding 3408km" '+
+ 'is an odometer start; "ended at 3520" is the end. "petrol 500 at 3408" is a fill-up: rupees and the '+
+ 'odometer reading. Never guess an odometer number he did not say.\n'+
  'Portions are South Indian: idli 58kcal/2g, dosa 133/2.7, chapati 104/3, 1 cup rice 205/4, sambar 65/3, '+
  'egg 78/6.3, chicken curry 250/20, tea with sugar 90/2, parotta 250/5.';
 
@@ -2707,6 +2775,24 @@ function runActions(list,thumb){
    else if(a.a==='unpaid'&&a.id){
     if(isPaid(a.id)){togglePaid(a.id,true);out.push('\u2713 put back as unpaid');}
    }
+   else if(a.a==='fuel'&&a.km){
+    var fr=addFuel(a.km,a.rupees,a.litres);
+    if(fr)out.push('\u2713 petrol '+R(fr.rupees)+' at '+N(a.km)+' km');
+   }
+   else if(a.a==='odo'&&a.km){
+    setOdo(d,a.when==='end'?'end':'start',a.km);
+    out.push('\u2713 odometer '+(a.when==='end'?'end':'start')+' '+N(a.km)+' km'+
+     (kmOn(d)?' \u2014 '+N(kmOn(d))+' km today':''));
+   }
+   else if(a.a==='lend'&&a.amount&&a.who){
+    addLent(a.who,Number(a.amount),D.accounts[0].id,'');
+    out.push('\u2713 '+R(a.amount)+' to '+a.who);
+   }
+   else if(a.a==='lentback'&&a.who){
+    var lb=(D.lent||[]).filter(function(x){return !x.back&&
+     String(x.who).toLowerCase()===String(a.who).toLowerCase();})[0];
+    if(lb){markBack(lb.id);out.push('\u2713 '+lb.who+' paid back');}
+   }
    else if(a.a==='save'&&a.amount){
     var pot=pots().filter(function(x){return x.id===a.pot||x.name===a.pot;})[0];
     if(pot){
@@ -2720,6 +2806,206 @@ function runActions(list,thumb){
  });
  save();
  return out;
+}
+
+/* ===== self test: turns guesswork into facts ===== */
+var APP_VERSION='2026-11-12a';
+function diagSheet(){
+ openSheet('<div class="grab"></div><h3>Self test</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
+  'Checks each piece one by one. Takes about ten seconds.</div>'+
+  '<div id="diag" style="margin-top:14px"></div>'+
+  '<button class="go" id="diagcopy" onclick="copyDiag()" style="display:none">Copy the result</button>'+
+  '<button class="go ghost" onclick="closeSheet()">Close</button>');
+ runDiag();
+}
+var DIAG=[];
+function diagLine(label,state,detail){
+ DIAG.push(label+': '+state+(detail?' \u2014 '+detail:''));
+ var el=document.getElementById('diag');
+ if(!el)return;
+ var colr=state==='ok'?'var(--g2)':state==='no'?'var(--red)':'var(--amber)';
+ var mark2=state==='ok'?'\u2713':state==='no'?'\u2717':'\u2022';
+ el.innerHTML+='<div style="display:flex;gap:9px;padding:9px 0;border-bottom:1px dashed var(--line);'+
+  'font-size:12.5px;line-height:1.5">'+
+  '<span style="color:'+colr+';font-weight:700;flex:none">'+mark2+'</span>'+
+  '<div><b>'+esc(label)+'</b>'+(detail?'<br><span style="color:var(--mut)">'+esc(detail)+'</span>':'')+
+  '</div></div>';
+}
+function copyDiag(){
+ var t=DIAG.join('\n');
+ var ta=document.createElement('textarea');
+ ta.value=t;document.body.appendChild(ta);ta.select();
+ try{document.execCommand('copy');toast('Copied \u2014 paste it to Claude.');}
+ catch(e){toast('Select it by hand.');}
+ ta.remove();
+}
+function runDiag(){
+ DIAG=[];
+ diagLine('App version',APP_VERSION==='2026-11-12a'?'ok':'warn',APP_VERSION);
+ var where=location.hostname||'local file';
+ diagLine('Running from',blocked()?'no':'ok',
+  blocked()?where+' \u2014 inside Claude, outside calls are blocked here':where);
+ diagLine('Online',navigator.onLine?'ok':'no',navigator.onLine?'':'no connection');
+
+ if(!hasKey()){
+  diagLine('AI key','no','not set');
+  finishDiag();return;
+ }
+ diagLine('AI key','ok',D.ai.key.length+' characters, '+keyMask());
+
+ /* 1. can the key list models */
+ fetch(GBASE+'models?pageSize=200',{headers:{'x-goog-api-key':D.ai.key}})
+  .then(function(r){return r.text().then(function(t){return {s:r.status,t:t};});})
+  .then(function(res){
+   if(res.s!==200){
+    diagLine('Google accepts the key','no','HTTP '+res.s+' '+apiErr(res.s,res.t));
+    finishDiag();return;
+   }
+   var j=JSON.parse(res.t);
+   var ok=(j.models||[]).filter(function(m){
+     return (m.supportedGenerationMethods||[]).indexOf('generateContent')>-1;})
+    .map(function(m){return String(m.name).replace('models/','');});
+   diagLine('Google accepts the key','ok',ok.length+' models available');
+   if(!ok.length){diagLine('A usable model','no','none offered');finishDiag();return;}
+   D.ai.model='';save();
+   pickModel(function(model,err){
+    if(!model){diagLine('A usable model','no',err||'');finishDiag();return;}
+    diagLine('Model chosen','ok',model);
+    /* 2. a real call */
+    gemini([{text:'Reply with exactly {"ok":true}'}],function(j2,e2){
+     if(e2||!j2)diagLine('Text to the AI','no',e2||'no answer');
+     else diagLine('Text to the AI','ok','answered');
+     /* 3. a real picture */
+     var c=document.createElement('canvas');c.width=c.height=64;
+     var g2=c.getContext('2d');g2.fillStyle='#fff';g2.fillRect(0,0,64,64);
+     g2.fillStyle='#000';g2.font='40px sans-serif';g2.fillText('7',18,46);
+     var dataUrl=c.toDataURL('image/jpeg',0.8);
+     gemini([{text:'Return ONLY {"digit":N} for the digit in this image.'},
+      {inline_data:{mime_type:'image/jpeg',data:dataUrl.split(',')[1]}}],function(j3,e3){
+      if(e3||!j3)diagLine('Pictures to the AI','no',e3||'no answer');
+      else diagLine('Pictures to the AI','ok','read it as '+JSON.stringify(j3));
+      finishDiag();
+     });
+    });
+   });
+  })
+  .catch(function(e){
+   diagLine('Reaching Google','no',netErr(e));
+   finishDiag();
+  });
+}
+function finishDiag(){
+ diagLine('Camera input',(function(){
+  var i=document.createElement('input');i.type='file';
+  return i.type==='file'?'ok':'no';})(),'opens your camera or gallery');
+ diagLine('Voice built in',(window.SpeechRecognition||window.webkitSpeechRecognition)?'ok':'no',
+  (window.SpeechRecognition||window.webkitSpeechRecognition)?'language '+voiceLang():
+  'this browser has none \u2014 use Chrome');
+ try{
+  if(navigator.permissions&&navigator.permissions.query)
+   navigator.permissions.query({name:'microphone'}).then(function(p){
+    diagLine('Microphone permission',p.state==='granted'?'ok':p.state==='denied'?'no':'warn',p.state);
+   }).catch(function(){diagLine('Microphone permission','warn','cannot tell');});
+  else diagLine('Microphone permission','warn','cannot tell');
+ }catch(e){diagLine('Microphone permission','warn','cannot tell');}
+ try{
+  if(navigator.storage&&navigator.storage.persisted)
+   navigator.storage.persisted().then(function(ok){
+    diagLine('Storage protected',ok?'ok':'warn',ok?'':'Android may clear it');});
+ }catch(e){}
+ setTimeout(function(){
+  var n=D.tx.length+Object.keys(D.food).length;
+  diagLine('Your data','ok',D.tx.length+' money entries, '+
+   Object.keys(D.food).length+' days of food, '+D.debts.length+' loans');
+  var b=document.getElementById('diagcopy');if(b)b.style.display='';
+ },900);
+}
+
+/* ===== the money calendar: a day at a time, with the profit ===== */
+var MCAL=null;
+function mcalMonth(){return MCAL||ym();}
+function shiftMoneyMonth(n){
+ var q=mcalMonth().split('-'),d=new Date(Number(q[0]),Number(q[1])-1+n,1);
+ MCAL=d.getFullYear()+'-'+p2(d.getMonth()+1);draw();
+}
+function netOn(d){return inDay(d)-outDay(d);}
+function moneyDayState(d){
+ var i=inDay(d),o=outDay(d);
+ if(!i&&!o)return '';
+ if(i>=o)return 'good';
+ return 'over';
+}
+function moneyCalendar(){
+ var q=mcalMonth().split('-'),y=Number(q[0]),mo=Number(q[1]);
+ var first=new Date(y,mo-1,1),dim=new Date(y,mo,0).getDate(),lead=first.getDay(),cells='';
+ ['S','M','T','W','T','F','S'].forEach(function(w){cells+='<div class="wd">'+w+'</div>';});
+ for(var i=0;i<lead;i++)cells+='<button class="cd pad"></button>';
+ for(var dn=1;dn<=dim;dn++){
+  var ds=y+'-'+p2(mo)+'-'+p2(dn);
+  cells+='<button class="cd '+moneyDayState(ds)+(ds===today()?' now':'')+
+   '" onclick="moneyDay(\''+ds+'\')">'+dn+'<span class="pd"></span></button>';
+ }
+ var mIn=0,mOut=0;
+ for(var k=1;k<=dim;k++){var dd=y+'-'+p2(mo)+'-'+p2(k);mIn+=inDay(dd);mOut+=outDay(dd);}
+ return '<div class="cal"><div class="calhd">'+
+  '<button onclick="shiftMoneyMonth(-1)">\u2039</button>'+
+  '<b>'+first.toLocaleDateString('en-IN',{month:'long',year:'numeric'})+'</b>'+
+  '<button onclick="shiftMoneyMonth(1)">\u203A</button></div>'+
+  '<div class="calgrid">'+cells+'</div>'+
+  '<div class="macro" style="margin-top:13px">'+
+   '<div><div class="mic">In</div><b class="grn">'+R(mIn)+'</b></div>'+
+   '<div><div class="mic">Out</div><b class="red">'+R(mOut)+'</b></div>'+
+   '<div><div class="mic">Kept</div><b class="'+(mIn>=mOut?'grn':'red')+'">'+
+    (mIn>=mOut?R(mIn-mOut):'\u2212'+R(mOut-mIn))+'</b></div></div>'+
+  '<div class="callegend">'+
+   '<span><i style="background:var(--g2)"></i>earned more</span>'+
+   '<span><i style="background:var(--red)"></i>spent more</span>'+
+   '<span style="margin-left:auto">tap a day</span></div></div>';
+}
+function moneyDay(d){
+ var ins=D.tx.filter(function(t){return t.date===d&&t.type==='in';});
+ var outs=D.tx.filter(function(t){return t.date===d&&t.type==='out';});
+ var others=D.tx.filter(function(t){return t.date===d&&(t.type==='lend'||t.type==='repay'||t.type==='move');});
+ var i=sum(ins),o=sum(outs),net=i-o;
+ if(!ins.length&&!outs.length&&!others.length)
+  return openSheet('<div class="grab"></div><h3>'+dshort(d)+'</h3>'+
+   '<div class="ban plain"><span class="ic">\u25CB</span><div>Nothing recorded on this day.</div></div>'+
+   '<button class="go ghost" onclick="closeSheet()">Close</button>');
+
+ var verdict = net>0?'You finished the day '+R(net)+' up.'
+  : net<0?'You finished the day '+R(-net)+' down.'
+  : 'In and out balanced exactly.';
+ var km=kmOn(d),fs2=fuelStats();
+
+ openSheet('<div class="grab"></div><h3>'+dshort(d)+'</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:3px">'+verdict+'</div>'+
+  '<div class="macro" style="margin-top:14px">'+
+   '<div><div class="mic">Earned</div><b class="grn">'+R(i)+'</b></div>'+
+   '<div><div class="mic">Spent</div><b class="red">'+R(o)+'</b></div>'+
+   '<div><div class="mic">Profit</div><b class="'+(net>=0?'grn':'red')+'">'+
+    (net>=0?R(net):'\u2212'+R(-net))+'</b></div></div>'+
+  (km?'<div class="ban plain"><span class="ic">\uD83C\uDFCD</span><div>'+N(km)+' km on the bike'+
+   (fs2.perKm?', about '+R(km*fs2.perKm)+' of petrol':'')+'.</div></div>':'')+
+
+  (ins.length?'<div class="mic" style="margin-top:20px">Came in</div>'+
+   '<div class="list" style="margin-top:9px">'+groupBy(ins,'src').map(function(x){
+    var notes=ins.filter(function(t){return t.src===x.name;})
+     .map(function(t){return t.note||'';}).filter(Boolean);
+    return '<div class="row"><div class="tile" style="background:var(--mint)">'+src(x.name).icon+'</div>'+
+     '<div class="nm"><b>'+esc(src(x.name).name)+'</b><i>'+esc(notes.join(', ')||'earned')+'</i></div>'+
+     '<div class="amt grn">+'+R(x.value)+'</div></div>';}).join('')+'</div>':'')+
+
+  (outs.length?'<div class="mic" style="margin-top:20px">Went out</div>'+
+   '<div class="list" style="margin-top:9px">'+outs.map(function(t){
+    return '<div class="row" onclick="closeSheet();editTx(\''+t.id+'\')">'+
+     '<div class="tile" style="background:'+col(t.cat)+'1A;color:'+col(t.cat)+'">'+ico(t.cat)+'</div>'+
+     '<div class="nm"><b>'+esc(t.note||t.cat)+'</b><i>'+esc(t.cat)+'</i></div>'+
+     '<div class="amt red">\u2212'+R(t.amount)+'</div></div>';}).join('')+'</div>':'')+
+
+  (others.length?'<div class="mic" style="margin-top:20px">Moved about</div>'+
+   '<div class="list" style="margin-top:9px">'+others.map(txRow).join('')+'</div>':'')+
+  '<button class="go" onclick="closeSheet()">Close</button>');
 }
 
 /* ===== the month, looked back on ===== */
@@ -2794,6 +3080,59 @@ function prevMonth(m){
  return d.getFullYear()+'-'+p2(d.getMonth()+1);
 }
 
+/* ===== fingerprint, using the phone's own hardware =====
+   The phone proves it is him; nothing about the fingerprint ever reaches the app. */
+function bioAvailable(cb){
+ if(!window.PublicKeyCredential||!navigator.credentials||location.protocol!=='https:')return cb(false);
+ try{
+  PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
+   .then(function(ok){cb(!!ok);}).catch(function(){cb(false);});
+ }catch(e){cb(false);}
+}
+function b64(buf){
+ var b='',a=new Uint8Array(buf);
+ for(var i=0;i<a.length;i++)b+=String.fromCharCode(a[i]);
+ return btoa(b).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function rnd(n){var a=new Uint8Array(n);crypto.getRandomValues(a);return a;}
+function bioRegister(){
+ bioAvailable(function(ok){
+  if(!ok)return toast('This phone has no fingerprint or face unlock available to the browser.');
+  navigator.credentials.create({publicKey:{
+   challenge:rnd(32),
+   rp:{name:'Momentum'},
+   user:{id:rnd(16),name:(D.settings.name||'me')+'@momentum',
+    displayName:D.settings.name||'Momentum'},
+   pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],
+   authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required',
+    residentKey:'preferred'},
+   timeout:60000
+  }}).then(function(cred){
+   D.settings.bio=b64(cred.rawId);
+   save();closeSheet();draw();
+   toast('Fingerprint on. Your PIN still works if it ever fails.');
+  }).catch(function(e){
+   toast(e&&e.name==='NotAllowedError'?'Cancelled.':'Could not set it up on this phone.');
+  });
+ });
+}
+function bioPrompt(){
+ if(!D.settings.bio)return;
+ var raw=D.settings.bio.replace(/-/g,'+').replace(/_/g,'/');
+ var bin=atob(raw),arr=new Uint8Array(bin.length);
+ for(var i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+ navigator.credentials.get({publicKey:{
+  challenge:rnd(32),
+  allowCredentials:[{type:'public-key',id:arr.buffer}],
+  userVerification:'required',timeout:60000
+ }}).then(function(){
+  window._unlocked=1;chrome(true);draw();
+ }).catch(function(){
+  var m=document.getElementById('pin_msg');
+  if(m)m.textContent='Fingerprint not recognised \u2014 use the PIN.';
+ });
+}
+
 /* ===== a PIN, since this holds every number about his money ===== */
 function lockNeeded(){return !!(D.settings.pin&&!window._unlocked);}
 function lockScreen(){
@@ -2806,6 +3145,8 @@ function lockScreen(){
    'style="text-align:center;letter-spacing:8px;font-size:20px;margin-top:20px" '+
    'oninput="if(this.value.length>=4)tryPin()">'+
   '<div id="pin_msg" style="font-size:12.5px;color:var(--red);margin-top:10px;min-height:18px"></div>'+
+  (D.settings.bio?'<button class="go ghost" style="max-width:220px;margin:14px auto 0" '+
+   'onclick="bioPrompt()">\u261D Use fingerprint</button>':'')+
   '</div>';
 }
 function tryPin(){
@@ -2826,8 +3167,12 @@ function pinSheet(){
   'Four to eight digits, asked each time you open it. It only locks this app on this phone \u2014 '+
   'it is not encryption, and anyone with your unlocked phone and patience could still get at the data. '+
   'Do not reuse your bank PIN.</div>'+
-  (on?'<button class="go red" onclick="D.settings.pin=\'\';save();closeSheet();toast(\'PIN removed.\')">'+
-    'Turn it off</button>'
+  (on?(D.settings.bio
+     ?'<button class="go ghost" onclick="D.settings.bio=\'\';save();closeSheet();draw();'+
+      'toast(\'Fingerprint off.\')">Turn fingerprint off</button>'
+     :'<button class="go" onclick="bioRegister()">\u261D Add fingerprint unlock</button>')+
+    '<button class="go red" onclick="D.settings.pin=\'\';D.settings.bio=\'\';save();closeSheet();'+
+    'draw();toast(\'Lock removed.\')">Turn the lock off</button>'
    :'<input id="pin_a" type="password" inputmode="numeric" maxlength="8" placeholder="New PIN">'+
     '<input id="pin_b" type="password" inputmode="numeric" maxlength="8" placeholder="Again">'+
     '<button class="go" onclick="setPin()">Turn it on</button>')+
@@ -2842,80 +3187,306 @@ function setPin(){
  toast('PIN on. Keep a backup \u2014 forgetting it means erasing and restoring.');
 }
 
-/* ===== riding sessions: what an hour out there is actually worth ===== */
-function liveSession(){return D.session||null;}
-function startSession(srcId){
- D.session={src:srcId,start:Date.now(),date:today()};
- save();closeSheet();draw();
- toast('Clock started for '+src(srcId).name+'. Stop it when you get home.');
+/* ================= THE BIKE =================
+   Tank-to-tank mileage: the distance covered on a tankful, divided by the litres
+   that went in at the START of that stretch. That is the only honest way to measure it. */
+function fuels(){return (D.fuel||[]).slice().sort(function(a,b){return a.km-b.km;});}
+function petrolPrice(){return D.settings.petrol||107.76;}
+function litresOf(f){
+ if(f.litres)return f.litres;
+ return f.rupees&&f.price?Math.round(f.rupees/f.price*100)/100:0;
 }
-function sessionMins(){
- var s2=liveSession();
- return s2?Math.max(1,Math.round((Date.now()-s2.start)/60000)):0;
+function addFuel(km,rupees,litres,note){
+ km=Number(km)||0;
+ if(!km)return toast('I need the odometer reading.');
+ var last=fuels()[fuels().length-1];
+ if(last&&km<last.km)return toast('That reading is lower than the last one ('+N(last.km)+' km).');
+ mark('that fill-up');
+ var price=petrolPrice();
+ var rec={id:nid(),date:today(),km:km,
+  rupees:Number(rupees)||(litres?Math.round(litres*price):0),
+  litres:Number(litres)||0,price:price,note:note||''};
+ D.fuel=(D.fuel||[]).concat([rec]);
+ if(rec.rupees)D.tx.push({id:nid(),date:today(),amount:rec.rupees,type:'out',cat:'Fuel',
+  note:'Petrol at '+N(km)+' km',acct:D.accounts[0].id,fuelId:rec.id});
+ save();
+ var st=fuelStats();
+ var msg=R(rec.rupees)+' petrol at '+N(km)+' km';
+ if(st.last)msg+=' \u2014 last tank gave '+st.last.kmpl+' km/l';
+ draw();toast(msg);
+ return rec;
 }
-function stopSessionSheet(){
- var s2=liveSession();if(!s2)return;
- var mins=sessionMins();
- openSheet('<div class="grab"></div><h3>'+esc(src(s2.src).name)+' \u2014 '+fmtMins(mins)+'</h3>'+
+function fuelStats(){
+ var f=fuels(),legs=[];
+ for(var i=1;i<f.length;i++){
+  var prev=f[i-1],cur=f[i];
+  var dist=cur.km-prev.km, lit=litresOf(prev);
+  if(dist>0&&lit>0)
+   legs.push({from:prev.km,to:cur.km,dist:dist,litres:lit,
+    kmpl:Math.round(dist/lit*10)/10,
+    cost:prev.rupees,
+    perKm:Math.round(prev.rupees/dist*100)/100,
+    date:cur.date});
+ }
+ var totDist=legs.reduce(function(x,l){return x+l.dist;},0);
+ var totLit=legs.reduce(function(x,l){return x+l.litres;},0);
+ var spent=f.reduce(function(x,r){return x+(r.rupees||0);},0);
+ return {legs:legs,last:legs[legs.length-1]||null,
+  avg:totLit?Math.round(totDist/totLit*10)/10:0,
+  totDist:totDist,spent:spent,
+  perKm:totDist?Math.round(spent/totDist*100)/100:0,
+  fills:f.length};
+}
+/* odometer at the start and end of a day, for days he just rides */
+function odo(d){return (D.odo||{})[d]||null;}
+function setOdo(d,which,km){
+ D.odo=D.odo||{};
+ D.odo[d]=D.odo[d]||{};
+ D.odo[d][which]=Number(km)||0;
+ save();
+}
+function kmOn(d){
+ var o=odo(d);
+ if(o&&o.start&&o.end&&o.end>=o.start)return o.end-o.start;
+ return 0;
+}
+function kmIn(span){
+ var r=range(span),tot=0;
+ Object.keys(D.odo||{}).forEach(function(d){
+  if(d>=r[0]&&d<=r[1])tot+=kmOn(d);});
+ return tot;
+}
+function bikePage(){
+ var st=fuelStats(),f=fuels(),o=odo(today());
+ var h='<div class="wrap">'+header('Your bike');
+
+ h+='<div class="sec"><div class="card" style="background:var(--g1);color:#fff;border-color:transparent">'+
+  '<div class="mic" style="color:rgba(255,255,255,.6)">Mileage</div>'+
+  '<div class="big" style="margin-top:5px">'+(st.avg||'\u2014')+
+   '<span style="font-size:15px;font-weight:600;opacity:.65"> km/l</span></div>'+
+  '<div style="font-size:12.5px;opacity:.8;margin-top:8px">'+
+   (st.last?'Last tank gave '+st.last.kmpl+' km/l over '+N(st.last.dist)+' km'
+    :f.length?'One more fill-up and I can work out the mileage.'
+    :'Add a fill-up with the odometer reading to start.')+'</div></div></div>';
+
+ h+='<div class="sec"><div class="trio">'+
+  '<div class="card"><div class="mic">Ridden</div><div class="v">'+N(st.totDist)+'</div>'+
+   '<div style="font-size:10.5px;color:var(--mut);margin-top:3px">km on record</div></div>'+
+  '<div class="card"><div class="mic">Petrol</div><div class="v">'+R(st.spent)+'</div>'+
+   '<div style="font-size:10.5px;color:var(--mut);margin-top:3px">'+st.fills+' fill-up'+
+    (st.fills===1?'':'s')+'</div></div>'+
+  '<div class="card"><div class="mic">Costs you</div><div class="v">'+
+   (st.perKm?'\u20B9'+st.perKm:'\u2014')+'</div>'+
+   '<div style="font-size:10.5px;color:var(--mut);margin-top:3px">a kilometre</div></div></div></div>';
+
+ h+='<button class="go" onclick="fuelSheet()">\u26FD Add a fill-up</button>';
+
+ /* today's riding */
+ h+='<div class="sec"><div class="sechead"><h2>Today</h2><span class="more">'+
+  (kmOn(today())?N(kmOn(today()))+' km':'not started')+'</span></div>'+
+  '<div class="card"><div style="display:flex;gap:9px">'+
+  '<div style="flex:1"><div class="mic">Started at</div>'+
+   '<input id="odo_s" type="number" inputmode="numeric" value="'+((o&&o.start)||'')+
+   '" placeholder="km" onchange="setOdo(today(),\'start\',this.value);draw()"></div>'+
+  '<div style="flex:1"><div class="mic">Ended at</div>'+
+   '<input id="odo_e" type="number" inputmode="numeric" value="'+((o&&o.end)||'')+
+   '" placeholder="km" onchange="setOdo(today(),\'end\',this.value);draw()"></div></div>'+
+  (kmOn(today())?'<div class="ban" style="margin-top:12px"><span class="ic">\uD83C\uDFCD</span><div>'+
+   N(kmOn(today()))+' km today'+(st.avg?' \u2014 about '+R(kmOn(today())*(st.perKm||0))+
+   ' of petrol burned':'')+'.</div></div>':'')+
+  '</div></div>';
+
+ /* every tank so far */
+ if(st.legs.length){
+  h+='<div class="sec"><div class="sechead"><h2>Tank by tank</h2>'+
+   '<span class="more">newest first</span></div><div class="list">'+
+   st.legs.slice().reverse().map(function(l){
+    var good=st.avg&&l.kmpl>=st.avg;
+    return '<div class="row"><div class="tile" style="background:'+(good?'var(--mint)':'#FAF3EC')+
+     ';color:'+(good?'var(--g2)':'#C2622F')+';font-weight:700;font-size:13px">'+l.kmpl+'</div>'+
+     '<div class="nm"><b>'+N(l.dist)+' km on '+l.litres+' litres</b>'+
+     '<i>'+N(l.from)+' \u2192 '+N(l.to)+' km \u00B7 '+R(l.cost)+' \u00B7 \u20B9'+l.perKm+'/km</i></div>'+
+     '<div class="amt">'+l.kmpl+'<span style="font-size:10px;color:var(--mut)"> km/l</span></div></div>';
+   }).join('')+'</div>'+
+   (st.legs.length>1?(function(){
+     var best=st.legs.slice().sort(function(a,b){return b.kmpl-a.kmpl;})[0];
+     var worst=st.legs.slice().sort(function(a,b){return a.kmpl-b.kmpl;})[0];
+     return '<div class="ban plain"><span class="ic">\u2139</span><div>Best tank '+best.kmpl+
+      ' km/l, worst '+worst.kmpl+' km/l. A drop usually means city traffic, tyre pressure, '+
+      'or a chain that wants oiling.</div></div>';})():'')+
+   '</div>';
+ }
+
+ /* the fills themselves */
+ if(f.length){
+  h+='<div class="sec"><div class="sechead"><h2>Fill-ups</h2></div><div class="list">'+
+   f.slice().reverse().map(function(r){
+    return '<div class="row" onclick="editFuel(\''+r.id+'\')">'+
+     '<div class="tile" style="background:#FAF3EC;color:#C98A2B">\u26FD</div>'+
+     '<div class="nm"><b>'+R(r.rupees)+' \u00B7 '+litresOf(r)+' l</b>'+
+     '<i>'+N(r.km)+' km \u00B7 '+dshort(r.date)+' \u00B7 \u20B9'+r.price+'/l</i></div>'+
+     '<span style="color:var(--mut)">\u270E</span></div>';}).join('')+'</div></div>';
+ }
+
+ h+='<div class="sec"><div class="sechead"><h2>Petrol price</h2>'+
+  '<span class="more">\u20B9'+petrolPrice()+' a litre</span></div><div class="card">'+
+  '<div style="font-size:12.5px;color:var(--mut);line-height:1.5">Used to turn rupees into litres. '+
+  'Change it whenever the pump price moves \u2014 the mileage is only as right as this number.</div>'+
+  '<input type="number" step="0.01" value="'+petrolPrice()+
+   '" onchange="D.settings.petrol=Number(this.value)||107.76;save();draw()"></div></div>';
+ return h+'<div style="height:16px"></div></div>';
+}
+function fuelSheet(){
+ var last=fuels()[fuels().length-1];
+ openSheet('<div class="grab"></div><h3>Fill-up</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
-  'What did you bring back, and what went in the tank?</div>'+
-  '<div class="mic" style="margin-top:16px">Earned</div>'+
-  '<input id="ss_earn" type="number" inputmode="decimal" placeholder="0">'+
-  '<div class="mic" style="margin-top:16px">Petrol put in (leave blank if none)</div>'+
-  '<input id="ss_fuel" type="number" inputmode="decimal" placeholder="0">'+
-  '<div class="mic" style="margin-top:16px">Minutes</div>'+
-  '<input id="ss_mins" type="number" inputmode="numeric" value="'+mins+'">'+
-  '<button class="go" onclick="endSession()">Save the trip</button>'+
-  '<button class="go red" onclick="D.session=null;save();closeSheet();draw();toast(\'Clock cleared.\')">'+
-  'Throw it away</button>'+
-  '<button class="go ghost" onclick="closeSheet()">Keep riding</button>');
+  (last?'Last one was at '+N(last.km)+' km.':'The first reading just sets the starting point.')+'</div>'+
+  '<div class="mic" style="margin-top:16px">Odometer now (km)</div>'+
+  '<input id="fu_km" type="number" inputmode="numeric" placeholder="'+(last?N(last.km+300):'3408')+'">'+
+  '<div class="mic" style="margin-top:16px">How much you put in</div>'+
+  '<div style="display:flex;gap:9px">'+
+   '<input id="fu_rs" type="number" inputmode="decimal" placeholder="rupees" oninput="fuelEcho()">'+
+   '<input id="fu_l" type="number" step="0.01" inputmode="decimal" placeholder="litres" oninput="fuelEcho(1)">'+
+  '</div>'+
+  '<div id="fu_echo" style="font-size:12.5px;color:var(--g2);margin-top:9px;font-weight:600">'+
+   'At \u20B9'+petrolPrice()+' a litre.</div>'+
+  '<button class="go" onclick="saveFuel()">Save</button>'+
+  '<button class="go ghost" onclick="closeSheet()">Cancel</button>');
+ setTimeout(function(){var e=document.getElementById('fu_km');if(e)e.focus();},170);
 }
-function fmtMins(m){
- if(m<60)return m+' min';
- var h2=Math.floor(m/60),r=m%60;
- return h2+'h'+(r?' '+r+'m':'');
+function fuelEcho(fromLitres){
+ var p=petrolPrice();
+ var rs=document.getElementById('fu_rs'),l=document.getElementById('fu_l'),
+     e=document.getElementById('fu_echo');
+ if(!rs||!l||!e)return;
+ if(fromLitres){
+  if(Number(l.value))rs.value=Math.round(Number(l.value)*p);
+ }else{
+  if(Number(rs.value))l.value=Math.round(Number(rs.value)/p*100)/100;
+ }
+ e.textContent=(Number(l.value)||0)+' litres at \u20B9'+p+' a litre.';
 }
-function endSession(){
- var s2=liveSession();if(!s2)return;
+function saveFuel(){
  function v(k){return Number((document.getElementById(k)||{}).value)||0;}
- var earn=v('ss_earn'),fuel=v('ss_fuel'),mins=v('ss_mins')||sessionMins();
- if(!earn&&!fuel)return toast('Put in what you earned.');
- mark('that trip');
- var sid=nid();
- if(earn)D.tx.push({id:nid(),date:today(),amount:earn,type:'in',src:s2.src,
-  note:fmtMins(mins)+' out',acct:D.accounts[0].id,mins:mins,sid:sid});
- if(fuel)D.tx.push({id:nid(),date:today(),amount:fuel,type:'out',cat:'Fuel',
-  note:'Petrol \u2014 '+src(s2.src).name,acct:D.accounts[0].id,sid:sid});
- D.session=null;save();closeSheet();draw();
- var net=earn-fuel,per=mins?Math.round(net/(mins/60)):0;
- toast(R(net)+' kept over '+fmtMins(mins)+' \u2014 about '+R(per)+' an hour.');
+ var km=v('fu_km');
+ if(!km)return toast('Put in the odometer reading.');
+ if(!v('fu_rs')&&!v('fu_l'))return toast('How much went in?');
+ closeSheet();
+ addFuel(km,v('fu_rs'),v('fu_l'));
 }
-function rideStats(span){
- var r=range(span);
- var rows=D.tx.filter(function(t){return t.type==='in'&&t.mins&&t.date>=r[0]&&t.date<=r[1];});
- var by={};
- rows.forEach(function(t){
-  var k=t.src||'other';
-  by[k]=by[k]||{earn:0,mins:0,fuel:0,trips:0};
-  by[k].earn+=t.amount;by[k].mins+=t.mins;by[k].trips++;
-  if(t.sid)D.tx.forEach(function(x){
-   if(x.sid===t.sid&&x.type==='out')by[k].fuel+=x.amount;});
- });
- return Object.keys(by).map(function(k){
-  var b=by[k];
-  return {src:k,earn:b.earn,fuel:b.fuel,mins:b.mins,trips:b.trips,
-   net:b.earn-b.fuel,perHour:b.mins?Math.round((b.earn-b.fuel)/(b.mins/60)):0};
- }).sort(function(a,b){return b.perHour-a.perHour;});
+function editFuel(id){
+ var r=(D.fuel||[]).filter(function(x){return x.id===id;})[0];if(!r)return;
+ openSheet('<div class="grab"></div><h3>Fill-up at '+N(r.km)+' km</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+dshort(r.date)+'</div>'+
+  '<div class="mic" style="margin-top:16px">Odometer (km)</div>'+
+  '<input id="ef_km" type="number" value="'+r.km+'">'+
+  '<div class="mic" style="margin-top:16px">Rupees</div>'+
+  '<input id="ef_rs" type="number" value="'+r.rupees+'">'+
+  '<div class="mic" style="margin-top:16px">Litres</div>'+
+  '<input id="ef_l" type="number" step="0.01" value="'+litresOf(r)+'">'+
+  '<button class="go" onclick="saveFuelEdit(\''+id+'\')">Save changes</button>'+
+  '<button class="go red" onclick="delFuel(\''+id+'\')">Remove this fill-up</button>'+
+  '<button class="go ghost" onclick="closeSheet()">Cancel</button>');
 }
-function rideSheet(){
- var gigs=D.sources.filter(function(x){return x.id!=='salary'&&x.id!=='other';});
- openSheet('<div class="grab"></div><h3>Going out to ride?</h3>'+
-  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
-  'Start the clock and the app works out what the hour was worth after petrol.</div>'+
-  '<div class="chips" style="margin-top:14px">'+gigs.map(function(x){
-   return '<button class="chip" onclick="startSession(\''+x.id+'\')">'+x.icon+' '+esc(x.name)+'</button>';
-  }).join('')+'</div>'+
-  '<button class="go ghost" onclick="closeSheet()">Not now</button>');
+function saveFuelEdit(id){
+ var r=(D.fuel||[]).filter(function(x){return x.id===id;})[0];if(!r)return;
+ mark('that fill-up');
+ function v(k){return Number((document.getElementById(k)||{}).value)||0;}
+ r.km=v('ef_km')||r.km;
+ var oldRs=r.rupees;
+ r.rupees=v('ef_rs');r.litres=v('ef_l');
+ if(oldRs!==r.rupees)D.tx.forEach(function(t){if(t.fuelId===id)t.amount=r.rupees;});
+ save();closeSheet();draw();toast('Updated.');
+}
+function delFuel(id){
+ if(!confirm('Remove this fill-up? The petrol spend goes with it.'))return;
+ mark('removing that fill-up');
+ D.fuel=(D.fuel||[]).filter(function(x){return x.id!==id;});
+ D.tx=D.tx.filter(function(t){return t.fuelId!==id;});
+ save();closeSheet();draw();toast('Removed.');
+}
+
+/* ================= MONEY LENT TO PEOPLE =================
+   Not spending. It leaves the account but it is still yours, so it sits in its own list
+   and comes back when they pay. */
+function lents(){return (D.lent||[]).slice().sort(function(a,b){
+ if(!!a.back!==!!b.back)return a.back?1:-1;
+ return a.date<b.date?1:-1;});}
+function lentOut(){return (D.lent||[]).filter(function(l){return !l.back;})
+ .reduce(function(x,l){return x+l.amount;},0);}
+function addLent(who,amount,acct,note){
+ if(!who||!amount)return;
+ mark('lending '+who+' '+R(amount));
+ var id=nid(),tid=nid();
+ D.lent=(D.lent||[]).concat([{id:id,who:who,amount:amount,date:today(),note:note||'',
+  acct:acct,txid:tid,back:null}]);
+ D.tx.push({id:tid,date:today(),amount:amount,type:'lend',acct:acct,
+  note:'Lent to '+who,lentId:id});
+ save();draw();
+ toast(R(amount)+' to '+who+' \u2014 in the list until it comes back.');
+}
+function markBack(id,amount){
+ var l=(D.lent||[]).filter(function(x){return x.id===id;})[0];if(!l)return;
+ mark(l.who+' paying back');
+ var amt=amount||l.amount;
+ l.back=today();l.backAmount=amt;
+ var tid=nid();
+ l.backTx=tid;
+ D.tx.push({id:tid,date:today(),amount:amt,type:'repay',acct:l.acct,
+  note:l.who+' paid back',lentId:id});
+ save();draw();
+ toast(l.who+' paid back '+R(amt)+'.');
+}
+function unBack(id){
+ var l=(D.lent||[]).filter(function(x){return x.id===id;})[0];if(!l)return;
+ mark('undoing that repayment');
+ D.tx=D.tx.filter(function(t){return t.id!==l.backTx;});
+ l.back=null;l.backAmount=0;l.backTx=null;
+ save();draw();
+}
+function lentSheet(id){
+ var l=(D.lent||[]).filter(function(x){return x.id===id;})[0];if(!l)return;
+ var days=Math.round((new Date(today())-new Date(l.date))/864e5);
+ openSheet('<div class="grab"></div><h3>'+esc(l.who)+'</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+R(l.amount)+' on '+dshort(l.date)+
+   (l.back?' \u00B7 paid back '+dshort(l.back):' \u00B7 '+days+' day'+(days===1?'':'s')+' ago')+
+   (l.note?'<br>'+esc(l.note):'')+'</div>'+
+  (l.back
+   ? '<div class="ban" style="margin-top:14px"><span class="ic">\u2713</span><div>Settled \u2014 '+
+     R(l.backAmount||l.amount)+' came back into '+esc(acc(l.acct).name)+'.</div></div>'+
+     '<button class="go ghost" onclick="closeSheet();unBack(\''+id+'\')">No, it has not come back</button>'
+   : '<div class="mic" style="margin-top:16px">How much came back</div>'+
+     '<input id="lb_amt" type="number" inputmode="decimal" value="'+l.amount+'">'+
+     '<button class="go" onclick="closeSheet();markBack(\''+id+'\',Number((document.getElementById(\'lb_amt\')||{}).value)||0)">'+
+     'They paid it back</button>')+
+  '<button class="go red" onclick="delLent(\''+id+'\')">Remove this record</button>'+
+  '<button class="go ghost" onclick="closeSheet()">Close</button>');
+}
+function delLent(id){
+ var l=(D.lent||[]).filter(function(x){return x.id===id;})[0];if(!l)return;
+ if(!confirm('Remove the record of lending '+l.who+' '+R(l.amount)+'?'))return;
+ mark('removing that loan to '+l.who);
+ D.tx=D.tx.filter(function(t){return t.lentId!==id;});
+ D.lent=(D.lent||[]).filter(function(x){return x.id!==id;});
+ save();closeSheet();draw();
+}
+function lentBlock(){
+ var list=lents();
+ if(!list.length)return '';
+ var out=lentOut();
+ return '<div class="sec"><div class="sechead"><h2>Out with people</h2>'+
+  '<span class="more">'+(out?R(out)+' still out':'all back')+'</span></div><div class="list">'+
+  list.map(function(l){
+   var days=Math.round((new Date(today())-new Date(l.date))/864e5);
+   return '<div class="row" onclick="lentSheet(\''+l.id+'\')">'+
+    '<div class="tile" style="background:'+(l.back?'var(--mint);color:var(--g2)':'#F2F1EB;color:var(--mut)')+
+     ';font-weight:700;font-size:15px">'+(l.back?'\u2713':esc(l.who.charAt(0).toUpperCase()))+'</div>'+
+    '<div class="nm"><b style="'+(l.back?'opacity:.5':'')+'">'+esc(l.who)+'</b><i>'+
+     (l.back?'paid back '+dshort(l.back)
+      :dshort(l.date)+' \u00B7 '+days+' day'+(days===1?'':'s')+' ago')+
+     (l.note?' \u00B7 '+esc(l.note):'')+'</i></div>'+
+    '<div class="amt'+(l.back?'':' red')+'" style="'+(l.back?'opacity:.4':'')+'">'+R(l.amount)+'</div></div>';
+  }).join('')+'</div></div>';
 }
 
 /* ===== repeat what you already eat ===== */
@@ -3225,8 +3796,9 @@ function openFood(meal){
 function quickFood2(name,meal){return quickFood(meal,name);}
 function quickFood(meal,name){
  var f=FOODS.filter(function(x){return x[0]===name;})[0];if(!f)return;
+ mark('adding '+f[0]);
  addFood(FDAY||today(),meal,f[0],f[4],f[3],f[2]*f[4],null,(f[5]||0)*f[4]);
- draw();toast(f[4]+' '+f[0].toLowerCase()+' → '+Math.round(f[2]*f[4])+' kcal');
+ draw();toastUndo(f[4]+' '+f[0].toLowerCase()+' → '+Math.round(f[2]*f[4])+' kcal');
 }
 function addFoodText(meal){
  var t=(document.getElementById('fq')||{}).value||'';
@@ -3235,9 +3807,10 @@ function addFoodText(meal){
   if(hasKey()){closeSheet();aiText(t,meal);return;}
   toast('Could not match that — try "4 idli sambar", or add an AI key in Setup.');return;}
  var tot=0;
+ mark('that meal');
  foods.forEach(function(f){tot+=f.per*f.qty;
   addFood(FDAY||today(),meal,f.name,f.qty,f.unit,f.per*f.qty,null,f.pro*f.qty);});
- closeSheet();draw();toast(Math.round(tot)+' kcal added to '+meal);
+ closeSheet();draw();toastUndo(Math.round(tot)+' kcal added to '+meal);
 }
 function movePage(){
  var d=today(),H=D.health,acts=actOf(d),burn=burned(d),steps=stepsOf(d);
@@ -3559,11 +4132,19 @@ function setupPage(){
   (hasKey()?'<button class="go ghost" onclick="testKey()">Test it</button>'+
    '<button class="go red" onclick="D.ai.key=\'\';save();draw();toast(\'Key removed\')">Remove key</button>':'')+
   '</div></div>';
+ h+='<div class="sec"><div class="sechead"><h2>Is it working?</h2>'+
+  '<span class="more">'+APP_VERSION+'</span></div><div class="card">'+
+  '<div style="font-size:12.5px;color:var(--mut);line-height:1.5">Tests the key, the AI, the camera, '+
+  'the microphone and your storage, and tells you which part is failing.</div>'+
+  '<button class="go" onclick="diagSheet()">Run the self test</button></div></div>';
+
  h+='<div class="sec"><div class="sechead"><h2>Lock</h2><span class="more">'+
-  (D.settings.pin?'PIN on':'off')+'</span></div><div class="card">'+
+  (D.settings.bio?'fingerprint + PIN':D.settings.pin?'PIN on':'off')+'</span></div><div class="card">'+
   '<div style="font-size:12.5px;color:var(--mut);line-height:1.5">A PIN each time you open the app. '+
   'This phone only.</div>'+
-  '<button class="go ghost" onclick="pinSheet()">'+(D.settings.pin?'Change or remove it':'Set a PIN')+
+  '<button class="go ghost" onclick="pinSheet()">'+
+   (D.settings.pin?(D.settings.bio?'Fingerprint and PIN are on':'Add fingerprint, or remove the PIN')
+    :'Set a PIN')+
   '</button></div></div>';
  h+='<div class="sec"><div class="sechead"><h2>Backup</h2><span class="more" id="stormode">…</span></div>'+
   '<div class="card">'+
@@ -3622,7 +4203,7 @@ function setBal(id){
 }
 function openAdd(){
  openSheet('<div class="grab"></div><h3>Add</h3>'+
-  '<div class="chips" id="kind">'+[['out','Spent'],['in','Earned'],['move','Moved']]
+  '<div class="chips" id="kind">'+[['out','Spent'],['in','Earned'],['move','Moved'],['lend','Lent']]
    .map(function(k,i){return '<button class="chip'+(i===0?' on':'')+'" data-k="'+k[0]+
     '" onclick="pickKind(this)">'+k[1]+'</button>';}).join('')+'</div>'+
   '<input id="amt" type="number" inputmode="decimal" placeholder="Amount ₹">'+
@@ -3643,6 +4224,11 @@ function pickKind(btn){
  else if(k==='in')e.innerHTML='<div class="mic" style="margin-top:15px">Earned from</div><select id="srcsel">'+
   D.sources.map(function(s){return '<option value="'+s.id+'">'+s.icon+'  '+esc(s.name)+'</option>';}).join('')+'</select>'+
   '<input id="note" placeholder="Note (optional)">'+accSel('acct','Into');
+ else if(k==='lend')e.innerHTML='<div class="mic" style="margin-top:15px">Who did you give it to</div>'+
+  '<input id="lw" placeholder="Their name" list="whoList">'+
+  '<datalist id="whoList">'+(D.lent||[]).map(function(l){return '<option>'+esc(l.who)+'</option>';})
+   .filter(function(v,i,a){return a.indexOf(v)===i;}).join('')+'</datalist>'+
+  '<input id="note" placeholder="What for (optional)">'+accSel('acct','Out of');
  else e.innerHTML=accSel('from','From')+accSel('to','To');
  e.dataset.kind=k;
 }
@@ -3651,6 +4237,12 @@ function saveEntry(){
  if(!amount||amount<=0)return alert('Enter an amount first.');
  var k=document.getElementById('extra').dataset.kind;
  var note=(document.getElementById('note')||{}).value||'';
+ if(k==='lend'){
+  var who=((document.getElementById('lw')||{}).value||'').trim();
+  if(!who)return toast('Who did you give it to?');
+  addLent(who,amount,document.getElementById('acct').value,note);
+  closeSheet();return;
+ }
  if(k==='move'){
   var f=document.getElementById('from').value,t2=document.getElementById('to').value;
   if(f===t2)return alert('Pick two different accounts.');
@@ -3902,14 +4494,23 @@ function openSheet(html){
 }
 function closeSheet(){document.getElementById('sheet').classList.remove('on');}
 document.getElementById('sheet').onclick=function(e){if(e.target.id==='sheet')closeSheet();};
-function toast(msg){
- var t=document.createElement('div');t.textContent=msg;
+function toastUndo(msg){toast(msg,1);}
+function toast(msg,undoable){
+ var t=document.createElement('div');
+ if(undoable&&canUndo()){
+  t.innerHTML='<span></span><button style="border:0;background:rgba(255,255,255,.2);color:#fff;'+
+   'font:inherit;font-weight:700;font-size:12px;padding:6px 12px;border-radius:9px;margin-left:11px">'+
+   'Undo</button>';
+  t.firstChild.textContent=msg;
+  t.lastChild.onclick=function(e){e.stopPropagation();undo();t.remove();};
+ }else t.textContent=msg;
  t.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:122px;background:#15201B;'+
   'color:#fff;padding:12px 18px;border-radius:14px;font-size:13px;font-weight:600;z-index:60;'+
-  'box-shadow:0 8px 24px rgba(0,0,0,.22);max-width:86vw;text-align:center;line-height:1.4';
+  'box-shadow:0 8px 24px rgba(0,0,0,.22);max-width:90vw;text-align:center;line-height:1.4;'+
+  'display:flex;align-items:center;justify-content:center';
  document.body.appendChild(t);
  setTimeout(function(){t.style.transition='opacity .3s';t.style.opacity='0';
-  setTimeout(function(){t.remove();},320);},2400);
+  setTimeout(function(){t.remove();},320);},undoable?5200:2400);
 }
 var st=document.createElement('style');
 st.textContent='@keyframes gw{from{transform:scaleY(0);transform-origin:bottom}}';
