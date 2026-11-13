@@ -1379,9 +1379,14 @@ var GBASE='https://generativelanguage.googleapis.com/v1beta/';
 function pickModel(cb){
  if(D.ai.model)return cb(D.ai.model,null);
  var first=!D.ai.qp;
- fetch(GBASE+'models?pageSize=200'+(D.ai.qp?('&key='+encodeURIComponent(D.ai.key)):''),
-   D.ai.qp?{}:{headers:{'x-goog-api-key':D.ai.key}})
+ var pac=null,pkill=null;
+ try{pac=new AbortController();
+  pkill=setTimeout(function(){try{pac.abort();}catch(e){}},9000);}catch(e){}
+ var popt=D.ai.qp?{}:{headers:{'x-goog-api-key':D.ai.key}};
+ if(pac)popt.signal=pac.signal;
+ fetch(GBASE+'models?pageSize=200'+(D.ai.qp?('&key='+encodeURIComponent(D.ai.key)):''),popt)
   .then(function(r){
+   if(pkill)clearTimeout(pkill);
    return r.text().then(function(t){
     /* some keys are only accepted as a query parameter - try that once before giving up */
     if(!r.ok&&r.status===400&&first&&/API_KEY_INVALID|not valid/i.test(t)){
@@ -1402,7 +1407,10 @@ function pickModel(cb){
    D.ai.model=chosen;save();cb(chosen,null);
   })
   .catch(function(e){
+   if(pkill)clearTimeout(pkill);
    if(e&&e.message==='__qp__')return pickModel(cb);
+   if(e&&(e.name==='AbortError'||/abort/i.test(e.message||'')))
+    return cb(null,'Could not reach Google to see which models your key has. Check your signal.');
    cb(null,netErr(e));});
 }
 function apiErr(status,text){
@@ -1440,10 +1448,21 @@ function nextModel(){
 /* ================= ASKING THE AI =================
    One door for the whole app. It picks the service, and if that one is jammed it
    quietly tries the other, so a busy server is not something he has to see. */
+var _aiAC=null,_aiStopped=false;
+/* Everything the app asks of an AI lives inside one deadline. Four retries of
+   twenty-two seconds each is how a request quietly became two minutes of nothing. */
+var AI_DEADLINE=30000;
+function aiStop(){
+ _aiStopped=true;
+ try{if(_aiAC)_aiAC.abort();}catch(e){}
+ _aiAC=null;
+}
 function askAI(parts,opt,cb){
  opt=opt||{};
  var first=firstProv();
  if(!first)return cb(null,'no-key');
+ _aiStopped=false;
+ window._aiUntil=Date.now()+(opt.deadline||AI_DEADLINE);
  callProv(first,parts,opt,function(j,err,busy){
   if(j)return cb(j,null);
   var alt=busy?otherProv(first):'';
@@ -1475,8 +1494,9 @@ function openaiCall(parts,opt,cb){
  });
  var model=modelFor('openai',!!opt.smart);
  var ac=null,killer=null;
- try{ac=new AbortController();
-  killer=setTimeout(function(){try{ac.abort();}catch(e){}},25000);}catch(e){}
+ var left=Math.max(3000,(window._aiUntil||(Date.now()+AI_DEADLINE))-Date.now());
+ try{ac=new AbortController();_aiAC=ac;
+  killer=setTimeout(function(){try{ac.abort();}catch(e){}},Math.min(16000,left));}catch(e){}
  fetch('https://api.openai.com/v1/chat/completions',{
   method:'POST',
   headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
@@ -1525,8 +1545,9 @@ function gemini(parts,cb,attempt,opt){
    maxOutputTokens:700,candidateCount:1};
   if(!_noThink&&/2\.5|latest/.test(model))gc.thinkingConfig={thinkingBudget:0};
   var ac=null,killer=null;
-  try{ac=new AbortController();
-   killer=setTimeout(function(){try{ac.abort();}catch(e){}},22000);}catch(e){}
+  var left=Math.max(3000,(window._aiUntil||(Date.now()+AI_DEADLINE))-Date.now());
+  try{ac=new AbortController();_aiAC=ac;
+   killer=setTimeout(function(){try{ac.abort();}catch(e){}},Math.min(16000,left));}catch(e){}
   fetch(url,{
    method:'POST',
    headers:head,
@@ -1557,7 +1578,9 @@ function gemini(parts,cb,attempt,opt){
    if(e&&e.message==='__nothink__')return gemini(parts,cb,attempt,opt);
    if(e&&(e.name==='AbortError'||/abort/i.test(e.message||'')))
     return cb(null,'That took too long \u2014 the network or Google is slow. Try once more.');
-   if(e&&e.busy&&attempt<(otherProv('google')?1:4)){
+   if(_aiStopped)return cb(null,'Stopped.');
+   var timeLeft=(window._aiUntil||0)-Date.now();
+   if(e&&e.busy&&attempt<(otherProv('google')?1:3)&&timeLeft>6000){
     /* with a second service available, fail over fast instead of waiting it out */
     if(attempt>=2)nextModel();
     var wait=[900,2200,700,2500][attempt]||2000;
@@ -3363,7 +3386,11 @@ function chatPage(){
    h+='<div class="bub them">'+esc(m.text)+
     (m.done&&m.done.length?'<div class="didit">'+m.done.map(esc).join('<br>')+'</div>':'')+'</div>';
  });
- if(CHAT_BUSY)h+='<div class="bub them typing"><span></span><span></span><span></span></div>';
+ if(CHAT_BUSY)h+='<div class="bub them typing" style="display:flex;align-items:center;gap:10px">'+
+  '<span></span><span></span><span></span>'+
+  '<span id="chatsec" style="font-size:11.5px;color:var(--mut);font-weight:600"></span>'+
+  '<button class="chip" style="margin:0 0 0 4px;padding:4px 10px;font-size:11.5px" '+
+  'onclick="chatCancel()">Stop</button></div>';
  h+='</div>';
 
  var last=CHAT.length?CHAT[CHAT.length-1]:null;
@@ -3381,6 +3408,22 @@ function chatPage(){
  return h+'</div>';
 }
 function clearChat(){CHAT=[];CHAT_PHOTO=null;draw();}
+var _chatTick=null;
+function chatTimer(on){
+ clearInterval(_chatTick);
+ if(!on)return;
+ var t0=Date.now();
+ _chatTick=setInterval(function(){
+  var e=document.getElementById('chatsec');
+  if(!e)return clearInterval(_chatTick);
+  e.textContent=Math.round((Date.now()-t0)/1000)+'s';
+ },500);
+}
+function chatCancel(){
+ aiStop();chatTimer(false);CHAT_BUSY=false;
+ CHAT.push({role:'bot',text:'Stopped. Ask me again when you want.'});
+ draw();chatScroll();
+}
 function chatScroll(){
  setTimeout(function(){window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});},60);
 }
@@ -3409,7 +3452,9 @@ function chatSend(preset){
   '\n\n=== HE SAYS ===\n'+(t||'(just the photo)')}];
  if(photo)parts.push({inline_data:{mime_type:'image/jpeg',data:photo.full.split(',')[1]}});
 
+ chatTimer(true);
  askAI(parts,{smart:true},function(j,err){
+  chatTimer(false);
   CHAT_BUSY=false;
   if(err||!j){
    CHAT.push({role:'bot',text:err==='no-key'?'Add your AI key in Setup first.':err});
@@ -3532,7 +3577,7 @@ function runActions(list,thumb){
 }
 
 /* ===== self test: turns guesswork into facts ===== */
-var APP_VERSION='2026-11-13g';
+var APP_VERSION='2026-11-13h';
 function diagSheet(){
  openSheet('<div class="grab"></div><h3>Self test</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
@@ -3565,7 +3610,7 @@ function copyDiag(){
 }
 function runDiag(){
  DIAG=[];
- diagLine('App version',APP_VERSION==='2026-11-13g'?'ok':'warn',APP_VERSION);
+ diagLine('App version',APP_VERSION==='2026-11-13h'?'ok':'warn',APP_VERSION);
  var where=location.hostname||'local file';
  diagLine('Running from',blocked()?'no':'ok',
   blocked()?where+' \u2014 inside Claude, outside calls are blocked here':where);
