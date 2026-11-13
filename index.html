@@ -3277,7 +3277,7 @@ function runActions(list,thumb){
 }
 
 /* ===== self test: turns guesswork into facts ===== */
-var APP_VERSION='2026-11-13c';
+var APP_VERSION='2026-11-13e';
 function diagSheet(){
  openSheet('<div class="grab"></div><h3>Self test</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
@@ -3310,7 +3310,7 @@ function copyDiag(){
 }
 function runDiag(){
  DIAG=[];
- diagLine('App version',APP_VERSION==='2026-11-13c'?'ok':'warn',APP_VERSION);
+ diagLine('App version',APP_VERSION==='2026-11-13e'?'ok':'warn',APP_VERSION);
  var where=location.hostname||'local file';
  diagLine('Running from',blocked()?'no':'ok',
   blocked()?where+' \u2014 inside Claude, outside calls are blocked here':where);
@@ -4674,7 +4674,11 @@ function setupPage(){
     remRow('due','Money due in the next two days')+
     remRow('log','Nothing logged by 9pm')+
     '<button class="go ghost" onclick="fire(\'Momentum\',\'This is what a reminder looks like.\')">'+
-    'Send me a test one</button>')+
+    'Send me a test one</button>'+
+    '<div class="ban plain" style="margin-top:12px"><span class="ic">\u2139</span><div>'+
+    'Arriving silently? Android files web reminders quietly by default. Long-press one of them, '+
+    'open its settings and set it to Default or Alerting \u2014 then the money ones make a sound.'+
+    '</div></div>')+
   '</div></div>';
 
  var _fd=fuelDupes();
@@ -5129,14 +5133,23 @@ function remRow(k,label){
   '<span>'+label+'</span><span style="font-weight:700;color:'+
   (on?'var(--g2)':'var(--mut)')+'">'+(on?'on':'off')+'</span></button>';
 }
-function fire(title,body,tag){
+function fire(title,body,tag,sticky){
  try{
   var opt={body:body,icon:'icon-192.png',badge:'icon-192.png',
-   tag:tag||'momentum',vibrate:[120,60,120]};
-  if(navigator.serviceWorker&&navigator.serviceWorker.ready)
-   navigator.serviceWorker.ready.then(function(r){r.showNotification(title,opt);})
-    .catch(function(){try{new Notification(title,opt);}catch(e){}});
-  else new Notification(title,opt);
+   tag:tag||'momentum',vibrate:[200,80,200],renotify:true,silent:false,
+   requireInteraction:!!sticky,
+   timestamp:Date.now()};
+  /* serviceWorker.ready never settles when nothing is registered, so a reminder sent
+     through it would disappear without a word. Give it a moment, then go direct. */
+  var done=false;
+  function direct(){if(done)return;done=true;try{new Notification(title,opt);}catch(e){}}
+  if(navigator.serviceWorker&&navigator.serviceWorker.ready){
+   var late=setTimeout(direct,1200);
+   navigator.serviceWorker.ready.then(function(r){
+    if(done)return;done=true;clearTimeout(late);
+    try{r.showNotification(title,opt);}catch(e){done=false;direct();}
+   }).catch(function(){clearTimeout(late);direct();});
+  } else direct();
  }catch(e){}
 }
 function remDone(k){return (D.settings.remLog||{})[k]===today();}
@@ -5164,7 +5177,7 @@ function remCheck(){
    var k='due'+x.id+'g'+gap;
    if(remDone(k))return;remStamp(k);
    fire(x.name+' '+R(x.amount),
-    gap===0?'Due today.':gap===1?'Due tomorrow.':'Due in two days.','due'+x.id);
+    gap===0?'Due today.':gap===1?'Due tomorrow.':'Due in two days.','due'+x.id,gap<=1);
   });
  }
  if(r.log&&h>=21&&!remDone('log')){
