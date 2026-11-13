@@ -169,6 +169,9 @@ input,select,textarea{width:100%;padding:13px 14px;border:1px solid var(--line);
 .didit{margin-top:9px;padding-top:9px;border-top:1px dashed var(--line);font-size:11.5px;
  color:var(--g2);font-weight:600;line-height:1.7}
 .typing{display:flex;gap:4px;align-items:center;width:58px}
+.waitrow{display:flex;align-items:center;gap:10px;margin-top:10px}
+.waitrow .typing{flex:0 0 auto}
+.waitsec{font-size:11.5px;color:var(--mut);font-weight:700;min-width:30px}
 .typing span{width:6px;height:6px;border-radius:50%;background:#BFC6C2;animation:blink 1.2s infinite}
 .typing span:nth-child(2){animation-delay:.18s}
 .typing span:nth-child(3){animation-delay:.36s}
@@ -279,7 +282,7 @@ var SEED={
          eat:0,burn:400,steps:8000,autoTarget:true},
  tx:[], paid:{}, hlog:{}, food:{}, act:{}, fuel:[], odo:{}, lent:[],
  dict:{units:{},foods:[],notes:[]},
- settings:{pin:'',bio:'',petrol:107.76,incomeKnown:0,name:'',lang:'auto',heard:'',misses:0,ready:0,rem:{on:0,water:1,due:1,log:1},remLog:{}}, ai:{key:'',model:'',qp:0,okey:'',prov:'google',tmodel:'',pmodel:'',use:{}}, answered:{}
+ settings:{pin:'',bio:'',petrol:107.76,incomeKnown:0,name:'',lang:'auto',heard:'',misses:0,ready:0,rem:{on:0,water:1,due:1,log:1},remLog:{}}, ai:{key:'',model:'',qp:0,tmodel:'',pmodel:'',use:{}}, answered:{}
 };
 
 var CC={Food:['#C2622F','🍽'],Travel:['#3F7FA6','🛺'],Fuel:['#C98A2B','⛽'],
@@ -1319,23 +1322,13 @@ function stopListening(){
 /* ================= AI — optional, the user's own key ================= */
 var AI_TRY=['gemini-2.5-flash-lite','gemini-2.5-flash','gemini-flash-latest','gemini-2.0-flash'];
 var _noThink=0; /* set if a model rejects the no-thinking flag */
-function hasKey(){return !!(gKey()||oKey());}
+function hasKey(){return !!gKey();}
 function gKey(){return (D.ai.key&&D.ai.key.length>10)?D.ai.key:'';}
-function oKey(){return (D.ai.okey&&D.ai.okey.length>20)?D.ai.okey:'';}
-/* Which service to ask first. If he has only one key there is nothing to choose. */
-function firstProv(){
- if(D.ai.prov==='openai'&&oKey())return 'openai';
- if(D.ai.prov==='google'&&gKey())return 'google';
- return gKey()?'google':oKey()?'openai':'';
-}
-function otherProv(p){return p==='google'?(oKey()?'openai':''):(gKey()?'google':'');}
 
-/* The cheap model handles plain text; the better one reads plates and runs the chat.
-   Both are his to change in Setup. */
+/* Flash Lite answers fastest, which is what matters most here. The better model is
+   kept for reading a plate, where the extra thought actually shows. */
 var G_TEXT='gemini-2.5-flash-lite', G_SMART='gemini-2.5-flash';
-var O_TEXT='gpt-4o-mini',           O_SMART='gpt-4o-mini';
 function modelFor(prov,smart){
- if(prov==='openai')return (smart?D.ai.pmodel:D.ai.tmodel)||(smart?O_SMART:O_TEXT);
  return (smart?D.ai.pmodel:D.ai.tmodel)||(smart?G_SMART:G_TEXT);
 }
 
@@ -1379,9 +1372,13 @@ var GBASE='https://generativelanguage.googleapis.com/v1beta/';
 function pickModel(cb){
  if(D.ai.model)return cb(D.ai.model,null);
  var first=!D.ai.qp;
+ /* model discovery sits inside the same deadline as everything else, and it may not
+    recurse its way past it either */
+ var pleft=Math.max(2500,Math.min(9000,
+  (window._aiUntil||(Date.now()+AI_DEADLINE))-Date.now()));
  var pac=null,pkill=null;
  try{pac=new AbortController();
-  pkill=setTimeout(function(){try{pac.abort();}catch(e){}},9000);}catch(e){}
+  pkill=setTimeout(function(){try{pac.abort();}catch(e){}},pleft);}catch(e){}
  var popt=D.ai.qp?{}:{headers:{'x-goog-api-key':D.ai.key}};
  if(pac)popt.signal=pac.signal;
  fetch(GBASE+'models?pageSize=200'+(D.ai.qp?('&key='+encodeURIComponent(D.ai.key)):''),popt)
@@ -1408,7 +1405,10 @@ function pickModel(cb){
   })
   .catch(function(e){
    if(pkill)clearTimeout(pkill);
-   if(e&&e.message==='__qp__')return pickModel(cb);
+   if(e&&e.message==='__qp__'){
+    if(((window._aiUntil||0)-Date.now())<4000)
+     return cb(null,'Google is not answering. Try again in a moment.');
+    return pickModel(cb);}
    if(e&&(e.name==='AbortError'||/abort/i.test(e.message||'')))
     return cb(null,'Could not reach Google to see which models your key has. Check your signal.');
    cb(null,netErr(e));});
@@ -1459,73 +1459,89 @@ function aiStop(){
 }
 function askAI(parts,opt,cb){
  opt=opt||{};
- var first=firstProv();
- if(!first)return cb(null,'no-key');
+ if(!gKey())return cb(null,'no-key');
  _aiStopped=false;
  window._aiUntil=Date.now()+(opt.deadline||AI_DEADLINE);
- callProv(first,parts,opt,function(j,err,busy){
-  if(j)return cb(j,null);
-  var alt=busy?otherProv(first):'';
-  if(!alt)return cb(null,err);
-  toast('Switching to the other AI\u2026');
-  callProv(alt,parts,opt,function(j2,err2){
-   if(j2)return cb(j2,null);
-   cb(null,err2||err);
-  });
- });
-}
-function callProv(prov,parts,opt,cb){
- if(prov==='openai')return openaiCall(parts,opt,cb);
- return gemini(parts,function(j,e){
-  cb(j,e,!!(window._lastBusy));
- },0,opt);
+ gemini(parts,cb,0,opt);
 }
 
-/* OpenAI speaks a different shape, so the same parts are translated on the way out
-   and the answer is unwrapped on the way back. */
-function openaiCall(parts,opt,cb){
- var key=oKey();
- if(!key)return cb(null,'no-key',false);
- var content=[];
- (parts||[]).forEach(function(p){
-  if(p.text)content.push({type:'text',text:p.text});
-  else if(p.inline_data)content.push({type:'image_url',
-   image_url:{url:'data:'+p.inline_data.mime_type+';base64,'+p.inline_data.data,detail:'low'}});
- });
- var model=modelFor('openai',!!opt.smart);
- var ac=null,killer=null;
- var left=Math.max(3000,(window._aiUntil||(Date.now()+AI_DEADLINE))-Date.now());
- try{ac=new AbortController();_aiAC=ac;
-  killer=setTimeout(function(){try{ac.abort();}catch(e){}},Math.min(16000,left));}catch(e){}
- fetch('https://api.openai.com/v1/chat/completions',{
-  method:'POST',
-  headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
-  signal:ac?ac.signal:undefined,
-  body:JSON.stringify({model:model,
-   messages:[{role:'user',content:content}],
-   response_format:{type:'json_object'},
-   temperature:0.2,max_tokens:900})
- }).then(function(r){
-  if(killer)clearTimeout(killer);
-  return r.text().then(function(t){
-   if(r.status===429||r.status===503||r.status>=500){
-    var e2=new Error('OpenAI is busy right now.');e2.busy=true;throw e2;}
-   if(r.status===401)throw new Error('That OpenAI key was refused. Check it in Setup.');
-   if(r.status===400&&/credit|quota|billing/i.test(t))
-    throw new Error('Your OpenAI account has no credit. Top it up at platform.openai.com.');
-   if(!r.ok)throw new Error('OpenAI said no ('+r.status+').');
-   return JSON.parse(t);});
- }).then(function(j){
-  var u=j.usage||{};
-  useBump('openai',model,u.prompt_tokens||tokGuess(parts),u.completion_tokens||150);
-  var txt=(((j.choices||[])[0]||{}).message||{}).content||'';
-  try{cb(JSON.parse(txt),null,false);}
-  catch(e){cb(null,'The AI replied in a shape the app could not read.',false);}
- }).catch(function(e){
-  if(killer)clearTimeout(killer);
-  if(e&&(e.name==='AbortError'||/abort/i.test(e.message||'')))
-   return cb(null,'That took too long. Try once more.',true);
-  cb(null,(e&&e.message)||'Could not reach OpenAI.',!!(e&&e.busy));
+/* ================= STREAMING =================
+   The Gemini app feels instant because it shows words as they arrive rather than
+   waiting for the whole answer. Same here: the reply is written in plain text first,
+   streamed straight to the screen, and any actions follow after a marker at the end. */
+var SPLIT='###DO###';
+function geminiStream(parts,onText,onDone){
+ if(!gKey())return onDone(null,'no-key');
+ _aiStopped=false;
+ window._aiUntil=Date.now()+AI_DEADLINE;
+ pickModel(function(model,err){
+  if(err)return onDone(null,err);
+  model=D.ai.tmodel||G_TEXT;           /* fastest model: time to first word is what counts */
+  var head={'Content-Type':'application/json'};
+  if(!D.ai.qp)head['x-goog-api-key']=D.ai.key;
+  var url=GBASE+'models/'+model+':streamGenerateContent?alt=sse'+
+   (D.ai.qp?('&key='+encodeURIComponent(D.ai.key)):'');
+  var gc={temperature:0.3,maxOutputTokens:700,candidateCount:1};
+  if(!_noThink&&/2\.5|latest/.test(model))gc.thinkingConfig={thinkingBudget:0};
+  var ac=null,killer=null;
+  try{ac=new AbortController();_aiAC=ac;
+   killer=setTimeout(function(){try{ac.abort();}catch(e){}},AI_DEADLINE);}catch(e){}
+  fetch(url,{method:'POST',headers:head,signal:ac?ac.signal:undefined,
+   body:JSON.stringify({contents:[{parts:parts}],generationConfig:gc})})
+  .then(function(r){
+   if(!r.ok)return r.text().then(function(t){
+    if(r.status===429||r.status===503){var e=new Error(apiErr(r.status,t));e.busy=1;throw e;}
+    if(r.status===404){D.ai.model='';save();}
+    throw new Error(apiErr(r.status,t));});
+   if(!r.body||!r.body.getReader)throw new Error('__nostream__');
+   var reader=r.body.getReader(),dec=new TextDecoder(),buf='',all='',shown=0;
+   function pump(){
+    return reader.read().then(function(res){
+     if(_aiStopped){try{reader.cancel();}catch(e){}return;}
+     if(res.done){
+      if(killer)clearTimeout(killer);
+      useBump('google',model,tokGuess(parts),Math.ceil(all.length/4));
+      var cut=all.indexOf(SPLIT);
+      var say=(cut<0?all:all.slice(0,cut)).trim();
+      var rest=cut<0?'':all.slice(cut+SPLIT.length).trim();
+      var j={say:say,do:[],ask:[]};
+      if(rest){
+       var m=rest.match(/\{[\s\S]*\}/);
+       if(m)try{var p=JSON.parse(m[0]);j.do=p.do||[];j.ask=p.ask||[];}catch(e){}
+      }
+      return onDone(j,null);
+     }
+     buf+=dec.decode(res.value,{stream:true});
+     var lines=buf.split('\n');buf=lines.pop();
+     lines.forEach(function(L){
+      L=L.trim();
+      if(L.indexOf('data:')!==0)return;
+      var body=L.slice(5).trim();
+      if(!body||body==='[DONE]')return;
+      try{
+       var o=JSON.parse(body);
+       var t=((((o.candidates||[])[0]||{}).content||{}).parts||[{}])[0].text||'';
+       if(!t)return;
+       all+=t;
+       var cut=all.indexOf(SPLIT);
+       var visible=(cut<0?all:all.slice(0,cut));
+       if(visible.length>shown){shown=visible.length;onText(visible);}
+      }catch(e){}
+     });
+     return pump();
+    });
+   }
+   return pump();
+  })
+  .catch(function(e){
+   if(killer)clearTimeout(killer);
+   if(_aiStopped)return;
+   if(e&&e.message==='__nostream__')
+    return askAI(parts,{},function(j,er){onDone(j,er);});
+   if(e&&(e.name==='AbortError'||/abort/i.test(e.message||'')))
+    return onDone(null,'That took too long. Try once more.');
+   onDone(null,(e&&e.message)||'Could not reach Google.');
+  });
  });
 }
 
@@ -1580,11 +1596,11 @@ function gemini(parts,cb,attempt,opt){
     return cb(null,'That took too long \u2014 the network or Google is slow. Try once more.');
    if(_aiStopped)return cb(null,'Stopped.');
    var timeLeft=(window._aiUntil||0)-Date.now();
-   if(e&&e.busy&&attempt<(otherProv('google')?1:3)&&timeLeft>6000){
+   if(e&&e.busy&&attempt<3&&timeLeft>6000){
     /* with a second service available, fail over fast instead of waiting it out */
     if(attempt>=2)nextModel();
     var wait=[900,2200,700,2500][attempt]||2000;
-    if(attempt===0&&!otherProv('google'))toast('Google is busy \u2014 trying again\u2026');
+    if(attempt===0)toast('Google is busy \u2014 trying again\u2026');
     return setTimeout(function(){gemini(parts,cb,attempt+1,opt);},wait);
    }
    window._lastBusy=!!(e&&e.busy);
@@ -3323,14 +3339,19 @@ function ctxBlock(){
 var CHAT_RULES =
  'You are the assistant inside Momentum, a money and health app belonging to one person in Chennai. '+
  'You speak plainly and warmly, like someone who knows his situation. Never flatter. If he is over his '+
- 'calories or short on money, say so kindly and plainly. Keep replies to one or two short sentences '+
- 'unless he asks for detail.\n'+
+ 'calories or short on money, say so kindly and plainly. Keep replies short by default \u2014 two or '+
+ 'three sentences \u2014 but when he asks something that deserves a real answer, give him a real '+
+ 'answer and take the room you need.\n'+
  'He writes in English, Tamil, or Tamil in English letters, often with spelling mistakes. Read through '+
  'them. Common: muuta/muttai=egg, saadam/sadam=rice, kuzhambu/kulambu=gravy, poriyal=dry vegetable dish, '+
  'varuval=fry, sapadu=full meal, kadai=shop, selavu=spent.\n'+
- 'ALWAYS reply with ONE json object and nothing else:\n'+
- '{"say":"<your reply>","do":[ ...actions... ],"ask":["<chip>","<chip>"]}\n'+
- '"do" may be empty. Allowed actions:\n'+
+ 'ANSWER IN TWO PARTS, in this order, so your words can be shown while you are still writing.\n'+
+ 'PART 1: your reply to him, as plain text. No JSON, no quotes, no labels. One or two short '+
+ 'sentences. This is the only part he reads, so put everything that matters here.\n'+
+ 'PART 2: on a new line, exactly ###DO### and then one JSON object:\n'+
+ '{"do":[ ...actions... ],"ask":["<chip>","<chip>"]}\n'+
+ 'Always include PART 2, even when there is nothing to do: ###DO### {"do":[],"ask":[]}\n'+
+ 'Allowed actions:\n'+
  '{"a":"food","meal":"breakfast|lunch|snacks|dinner|drinks","items":[{"name":"","qty":1,"unit":"","kcal":0,"protein_g":0}]}\n'+
  '{"a":"spend","amount":0,"category":"Food|Travel|Fuel|Groceries|Bills|Health|Shopping|Fun|Family|Debt|Other","note":""}\n'+
  '{"a":"earn","amount":0,"source":"salary|rapido|uber|swiggy|other","note":"","mins":0}\n'+
@@ -3350,10 +3371,19 @@ var CHAT_RULES =
  'Only teach it what he has actually confirmed, never a guess he has not seen. Do not re-teach anything '+
  'listed as already learned in the context.\n'+
  'If a quantity or portion genuinely changes the number and you cannot tell, put NO action in "do", '+
- 'ask the one question in "say", and put two to four tappable answers in "ask". Otherwise leave "ask" empty '+
- 'and make a sensible estimate rather than interrogating him.\n'+
- 'For questions about his numbers, answer from the context only. Never invent a figure. If the context '+
- 'does not contain it, say you do not have it.\n'+
+ 'ask the one question in PART 1, and put two to four tappable answers in "ask". Otherwise leave "ask" '+
+ 'empty and make a sensible estimate rather than interrogating him.\n'+
+ 'TALK ABOUT ANYTHING HE RAISES. You are a real assistant, not a form. Nutrition, training, how to '+
+ 'ride for more money, what a loan actually costs him, whether a food is worth eating, why he is tired, '+
+ 'what to cook tonight, how something works \u2014 answer it properly, the way a knowledgeable friend '+
+ 'would. Use what you know about the world, not only the numbers below.\n'+
+ 'The one hard rule: figures about HIS money, food, weight or riding must come from the context below. '+
+ 'Never invent one of those, and say so plainly if it is not there. General knowledge is yours to use '+
+ 'freely.\n'+
+ 'When his own numbers make your answer sharper, reach for them. "Can I eat 2 eggs" deserves his '+
+ 'calories left and his protein so far, not a general lecture about eggs.\n'+
+ 'He is not a patient. Do not tell him to see a doctor for ordinary food and fitness questions. If '+
+ 'something sounds genuinely medical, say so once, briefly, and move on.\n'+
  'He rides for Rapido, Uber, Swiggy and Porter. "started the day at 3408" or "started riding 3408km" '+
  'is an odometer start; "ended at 3520" is the end. "petrol 500 at 3408" is a fill-up: rupees and the '+
  'odometer reading. Never guess an odometer number he did not say.\n'+
@@ -3386,11 +3416,15 @@ function chatPage(){
    h+='<div class="bub them">'+esc(m.text)+
     (m.done&&m.done.length?'<div class="didit">'+m.done.map(esc).join('<br>')+'</div>':'')+'</div>';
  });
- if(CHAT_BUSY)h+='<div class="bub them typing" style="display:flex;align-items:center;gap:10px">'+
-  '<span></span><span></span><span></span>'+
-  '<span id="chatsec" style="font-size:11.5px;color:var(--mut);font-weight:600"></span>'+
-  '<button class="chip" style="margin:0 0 0 4px;padding:4px 10px;font-size:11.5px" '+
-  'onclick="chatCancel()">Stop</button></div>';
+ if(CHAT_BUSY){
+  h+='<div class="bub them" id="chatlive" style="'+(CHAT_LIVE?'':'display:none')+'">'+
+   esc(CHAT_LIVE)+'</div>';
+  h+='<div class="waitrow">'+
+   '<div class="bub them typing"><span></span><span></span><span></span></div>'+
+   '<span class="waitsec" id="chatsec"></span>'+
+   '<button class="chip" style="margin:0;padding:5px 12px;font-size:11.5px" '+
+   'onclick="chatCancel()">Stop</button></div>';
+ }
  h+='</div>';
 
  var last=CHAT.length?CHAT[CHAT.length-1]:null;
@@ -3408,6 +3442,7 @@ function chatPage(){
  return h+'</div>';
 }
 function clearChat(){CHAT=[];CHAT_PHOTO=null;draw();}
+var CHAT_LIVE='';
 var _chatTick=null;
 function chatTimer(on){
  clearInterval(_chatTick);
@@ -3420,7 +3455,7 @@ function chatTimer(on){
  },500);
 }
 function chatCancel(){
- aiStop();chatTimer(false);CHAT_BUSY=false;
+ aiStop();chatTimer(false);CHAT_BUSY=false;CHAT_LIVE='';
  CHAT.push({role:'bot',text:'Stopped. Ask me again when you want.'});
  draw();chatScroll();
 }
@@ -3453,9 +3488,16 @@ function chatSend(preset){
  if(photo)parts.push({inline_data:{mime_type:'image/jpeg',data:photo.full.split(',')[1]}});
 
  chatTimer(true);
- askAI(parts,{smart:true},function(j,err){
+ CHAT_LIVE='';
+ geminiStream(parts,function(sofar){
+  /* words land on screen as they arrive, without redrawing the whole page */
+  CHAT_LIVE=sofar;
+  var el=document.getElementById('chatlive');
+  if(el){el.textContent=sofar;chatScroll();}
+  else{CHAT_BUSY=false;draw();}
+ },function(j,err){
   chatTimer(false);
-  CHAT_BUSY=false;
+  CHAT_BUSY=false;CHAT_LIVE='';
   if(err||!j){
    CHAT.push({role:'bot',text:err==='no-key'?'Add your AI key in Setup first.':err});
    draw();chatScroll();return;
@@ -3577,7 +3619,7 @@ function runActions(list,thumb){
 }
 
 /* ===== self test: turns guesswork into facts ===== */
-var APP_VERSION='2026-11-13h';
+var APP_VERSION='2026-11-13k';
 function diagSheet(){
  openSheet('<div class="grab"></div><h3>Self test</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
@@ -3610,7 +3652,7 @@ function copyDiag(){
 }
 function runDiag(){
  DIAG=[];
- diagLine('App version',APP_VERSION==='2026-11-13h'?'ok':'warn',APP_VERSION);
+ diagLine('App version',APP_VERSION==='2026-11-13k'?'ok':'warn',APP_VERSION);
  var where=location.hostname||'local file';
  diagLine('Running from',blocked()?'no':'ok',
   blocked()?where+' \u2014 inside Claude, outside calls are blocked here':where);
@@ -4917,46 +4959,28 @@ function setupPage(){
    return '<button class="chip'+(D.settings.lang===x[0]?' on':'')+'" onclick="setLang(\''+x[0]+'\')">'+
     x[1]+'</button>';}).join('')+'</div></div></div>';
 
- h+='<div class="sec"><div class="sechead"><h2>AI keys</h2><span class="more">'+
-  (gKey()&&oKey()?'both added':gKey()?'Google':oKey()?'OpenAI':'not set')+'</span></div><div class="card">'+
+ h+='<div class="sec"><div class="sechead"><h2>AI key</h2><span class="more">'+
+  (gKey()?'added':'not set')+'</span></div><div class="card">'+
   (blocked()?'<div class="ban amber" style="margin-top:0"><span class="ic">!</span><div>'+
-   '<b>The photo reader cannot work here.</b> While the app runs inside Claude, the browser blocks it from '+
-   'calling out \u2014 nothing to do with your key. On its own web address it works.</div></div>':'')+
-  '<div style="font-size:12.5px;color:var(--mut);line-height:1.5">Add one or both. With both, if one '+
-  'service is busy the app quietly uses the other, and you never see an outage. Keys are saved in this '+
-  'browser alone \u2014 never type one into a chat or send it to anyone.</div>'+
-
-  '<div class="mic" style="margin-top:17px">Google \u00B7 aistudio.google.com</div>'+
-  (gKey()?'<div style="font-size:11.5px;color:var(--mut);margin-top:5px">'+esc(keyMask())+' \u00B7 '+
+   '<b>The photo reader cannot work here.</b> While the app runs inside Claude, the browser blocks it '+
+   'from calling out. On its own web address it works.</div></div>':'')+
+  '<div style="font-size:12.5px;color:var(--mut);line-height:1.5">From '+
+  '<b>aistudio.google.com</b> \u2192 Get API key. Saved in this browser alone \u2014 never type it '+
+  'into a chat or send it to anyone.</div>'+
+  (gKey()?'<div style="margin-top:12px;padding:11px 13px;background:#FAFAF6;border:1px solid var(--line);'+
+    'border-radius:12px;font-size:12px;color:var(--mut);line-height:1.6">'+
+    '<b style="color:var(--ink)">Saved key</b><br><span id="keyview">'+esc(keyMask())+'</span><br>'+
     D.ai.key.length+' characters'+
-    (D.ai.key.length<30?' <b style="color:var(--red)">\u2014 too short, the paste was cut</b>':'')+
+    (D.ai.key.length<30?' \u2014 <b style="color:var(--red)">too short, the paste was cut</b>':'')+
+    (D.ai.model?'<br>model: '+esc(D.ai.model):'')+
     ' <span style="text-decoration:underline;color:var(--ink)" onclick="showKey()">show</span></div>':'')+
   '<input type="text" id="aik" autocomplete="off" autocorrect="off" autocapitalize="off" '+
    'spellcheck="false" style="-webkit-text-security:disc;text-security:disc" '+
-   'placeholder="'+(gKey()?'Paste a new Google key to replace it':'Paste your Google key')+'">'+
-  '<button class="go ghost" onclick="saveKey()">Save Google key</button>'+
-
-  '<div class="mic" style="margin-top:20px">OpenAI \u00B7 platform.openai.com</div>'+
-  '<div style="font-size:11.5px;color:var(--mut);margin-top:5px;line-height:1.5">'+
-  (oKey()?esc(okeyMask())+' \u00B7 '+D.ai.okey.length+' characters'
-   :'Your ChatGPT subscription does <b>not</b> work here. The API is billed separately, '+
-    'minimum about $5 of credit.')+'</div>'+
-  '<input type="text" id="aok" autocomplete="off" autocorrect="off" autocapitalize="off" '+
-   'spellcheck="false" style="-webkit-text-security:disc;text-security:disc" '+
-   'placeholder="'+(oKey()?'Paste a new OpenAI key to replace it':'Paste your OpenAI key (sk-...)')+'">'+
-  '<button class="go ghost" onclick="saveOKey()">Save OpenAI key</button>'+
-
-  (gKey()&&oKey()?'<div class="mic" style="margin-top:20px">Ask this one first</div>'+
-   '<div class="chips">'+
-   '<button class="'+(firstProv()==='google'?'on':'')+'" onclick="D.ai.prov=\'google\';save();draw()">Google</button>'+
-   '<button class="'+(firstProv()==='openai'?'on':'')+'" onclick="D.ai.prov=\'openai\';save();draw()">OpenAI</button>'+
-   '</div>':'')+
-
-  (hasKey()?'<button class="go" onclick="testKey()">Test it</button>':'')+
-  (gKey()?'<button class="go red" onclick="D.ai.key=\'\';save();draw();toast(\'Google key removed\')">'+
-   'Remove Google key</button>':'')+
-  (oKey()?'<button class="go red" onclick="D.ai.okey=\'\';save();draw();toast(\'OpenAI key removed\')">'+
-   'Remove OpenAI key</button>':'')+
+   'placeholder="'+(gKey()?'Paste a new key to replace it':'Paste your key')+'">'+
+  '<button class="go" onclick="saveKey()">Save key</button>'+
+  (gKey()?'<button class="go ghost" onclick="testKey()">Test it</button>'+
+   '<button class="go red" onclick="D.ai.key=\'\';save();draw();toast(\'Key removed\')">'+
+   'Remove key</button>':'')+
   '</div></div>';
 
  /* ---- which model, and what it has cost ---- */
@@ -4971,7 +4995,17 @@ function setupPage(){
    (dictCount()?'<br>'+dictCount()+' word'+(dictCount()===1?'':'s')+
      ' learned so far \u2014 each one is a question it never has to ask again.':'')+
    '</div>'+
-   '<div class="mic" style="margin-top:18px">Photos and chat use</div>'+
+   '<div class="mic" style="margin-top:18px">The chat</div>'+
+   '<div class="chips">'+
+    '<button class="'+(!D.ai.tmodel||D.ai.tmodel===G_TEXT?'on':'')+'" '+
+     'onclick="D.ai.tmodel=\''+G_TEXT+'\';save();draw()">Fastest</button>'+
+    '<button class="'+(D.ai.tmodel===G_SMART?'on':'')+'" '+
+     'onclick="D.ai.tmodel=\''+G_SMART+'\';save();draw()">Cleverer</button>'+
+   '</div>'+
+   '<div style="font-size:11.5px;color:var(--mut);margin-top:9px;line-height:1.5">'+
+   'Fastest starts talking in about half a second. Cleverer takes a second or so longer and thinks '+
+   'better about anything that is not simply logging a number.</div>'+
+   '<div class="mic" style="margin-top:18px">Photos use</div>'+
    '<div class="chips">'+
     '<button class="'+(!D.ai.pmodel?'on':'')+'" onclick="D.ai.pmodel=\'\';save();draw()">'+
      'Better \u00B7 costs more</button>'+
@@ -5086,20 +5120,6 @@ function paintStorage(){
       s.years<1?'under a year':Math.round(s.years)+' years'):'')+'.'
    :'<br>A couple more weeks of logging and I can tell you how long this lasts.')+
   (s.pct>70?'<br><b>Worth taking a backup and telling me \u2014 I will move the store.</b>':'');
-}
-function okeyMask(){
- var k=D.ai.okey||'';
- if(k.length<14)return k;
- return k.slice(0,7)+'\u2026'+k.slice(-4);
-}
-function saveOKey(){
- var el=document.getElementById('aok');
- var v=((el||{}).value||'').trim();
- if(!v)return toast('Nothing pasted.');
- if(v.length<20)return toast('That looks cut short \u2014 use the copy button, not drag-select.');
- if(v.indexOf(' ')>=0)return toast('That has a space in it. Copy it again.');
- D.ai.okey=v;save();draw();
- toast('OpenAI key saved \u2014 tap Test it.');
 }
 /* ================= BRINGING IN WATCH DATA =================
    No watch can talk to a web app, but every watch app can export a file.
