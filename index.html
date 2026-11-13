@@ -278,7 +278,7 @@ var SEED={
  health:{weightStart:75,weightTarget:70,height:170,age:30,water:3000,protein:0,
          eat:0,burn:400,steps:8000,autoTarget:true},
  tx:[], paid:{}, hlog:{}, food:{}, act:{}, fuel:[], odo:{}, lent:[],
- settings:{pin:'',bio:'',petrol:107.76,incomeKnown:0,name:'',lang:'auto',heard:'',misses:0,ready:0}, ai:{key:'',model:'',qp:0}, answered:{}
+ settings:{pin:'',bio:'',petrol:107.76,incomeKnown:0,name:'',lang:'auto',heard:'',misses:0,ready:0,rem:{on:0,water:1,due:1,log:1},remLog:{}}, ai:{key:'',model:'',qp:0}, answered:{}
 };
 
 var CC={Food:['#C2622F','🍽'],Travel:['#3F7FA6','🛺'],Fuel:['#C98A2B','⛽'],
@@ -459,6 +459,19 @@ function load(){
    else if(k==='health'||k==='settings'||k==='ai')
     Object.keys(SEED[k]).forEach(function(j){if(d[k][j]===undefined)d[k][j]=SEED[k][j];});
   });
+  /* sources added to the app after this person installed it get folded in,
+     with Other kept last where it belongs */
+  (function(){
+   var have={};(d.sources||[]).forEach(function(x){have[x.id]=1;});
+   var missing=SEED.sources.filter(function(x){return !have[x.id];});
+   if(missing.length){
+    var head=(d.sources||[]).filter(function(x){return x.id!=='other';})
+      .concat(missing.filter(function(x){return x.id!=='other';}));
+    var tail=(d.sources||[]).filter(function(x){return x.id==='other';})
+      .concat(missing.filter(function(x){return x.id==='other';}));
+    d.sources=head.concat(tail);
+   }
+  })();
   /* someone who already has data never sees the welcome screen */
   if(!d.settings.ready&&((d.tx||[]).length||(d.debts||[]).length||(d.accounts||[]).length>1||
      Object.keys(d.food||{}).length))d.settings.ready=1;
@@ -670,6 +683,8 @@ function addDebtSheet(){
   '<input id="n_emi" type="number" inputmode="decimal" placeholder="0">'+
   '<div class="mic" style="margin-top:16px">Day of the month it is due</div>'+
   '<input id="n_day" type="number" inputmode="numeric" placeholder="1">'+
+  '<div class="mic" style="margin-top:15px">Interest rate a year, if you know it (%)</div>'+
+  '<input id="n_rate" type="number" step="0.1" inputmode="decimal" placeholder="leave blank if unsure">'+
   '<button class="go" onclick="addDebt()">Add</button>'+
   '<button class="go ghost" onclick="closeSheet()">Cancel</button>');
  setTimeout(function(){var e=document.getElementById('n_nm');if(e)e.focus();},170);
@@ -684,7 +699,7 @@ function addDebt(){
  if(tot<left)tot=left;
  D.debts.push({id:nid(),name:nm,
   lender:((document.getElementById('n_len')||{}).value||'').trim(),
-  total:tot,left:left,emi:v('n_emi'),
+  total:tot,left:left,emi:v('n_emi'),rate:v('n_rate'),
   day:Math.min(31,Math.max(1,v('n_day')||1))});
  save();closeSheet();draw();toast(nm+' added.');
 }
@@ -1208,7 +1223,8 @@ function stopListening(){
 }
 
 /* ================= AI — optional, the user's own key ================= */
-var AI_TRY=['gemini-flash-latest','gemini-2.5-flash','gemini-2.0-flash'];
+var AI_TRY=['gemini-2.5-flash-lite','gemini-2.5-flash','gemini-flash-latest','gemini-2.0-flash'];
+var _noThink=0; /* set if a model rejects the no-thinking flag */
 function hasKey(){return !!(D.ai.key&&D.ai.key.length>10);}
 /* Inside Claude's artifact frame the browser blocks every call to an outside service.
    Served from an ordinary web address, or opened as a file, the same call goes through. */
@@ -1289,14 +1305,25 @@ function gemini(parts,cb,attempt){
   var url=GBASE+'models/'+model+':generateContent'+(D.ai.qp?('?key='+encodeURIComponent(D.ai.key)):'');
   var head={'Content-Type':'application/json'};
   if(!D.ai.qp)head['x-goog-api-key']=D.ai.key;
+  /* Gemini 2.5 thinks before it answers unless told not to. For reading a plate
+     that thinking is pure waiting, so it is switched off and the answer capped. */
+  var gc={responseMimeType:'application/json',temperature:0.2,
+   maxOutputTokens:700,candidateCount:1};
+  if(!_noThink&&/2\.5|latest/.test(model))gc.thinkingConfig={thinkingBudget:0};
+  var ac=null,killer=null;
+  try{ac=new AbortController();
+   killer=setTimeout(function(){try{ac.abort();}catch(e){}},22000);}catch(e){}
   fetch(url,{
    method:'POST',
    headers:head,
-   body:JSON.stringify({contents:[{parts:parts}],
-    generationConfig:{responseMimeType:'application/json',temperature:0.2}})
+   signal:ac?ac.signal:undefined,
+   body:JSON.stringify({contents:[{parts:parts}],generationConfig:gc})
   }).then(function(r){
+   if(killer)clearTimeout(killer);
    return r.text().then(function(t){
     if(r.status===404){D.ai.model='';save();throw new Error('__model__');}
+    if(r.status===400&&/thinking|thinkingConfig|thinking_budget/i.test(t)&&!_noThink){
+     _noThink=1;throw new Error('__nothink__');}
     if(r.status===503||r.status===429||busyErr(t)){
      var e2=new Error(apiErr(r.status,t));e2.busy=true;throw e2;}
     if(!r.ok)throw new Error(apiErr(r.status,t));
@@ -1308,7 +1335,11 @@ function gemini(parts,cb,attempt){
    try{cb(JSON.parse(txt),null);}
    catch(e){cb(null,'The AI replied in a shape the app could not read.');}
   }).catch(function(e){
+   if(killer)clearTimeout(killer);
    if(e&&e.message==='__model__')return gemini(parts,cb,attempt);
+   if(e&&e.message==='__nothink__')return gemini(parts,cb,attempt);
+   if(e&&(e.name==='AbortError'||/abort/i.test(e.message||'')))
+    return cb(null,'That took too long \u2014 the network or Google is slow. Try once more.');
    if(e&&e.busy&&attempt<4){
     /* first two: wait and ask the same model again. then: switch models. */
     if(attempt>=2)nextModel();
@@ -1403,7 +1434,7 @@ function shrink(file,cb){
    c.getContext('2d').drawImage(img,0,0,c.width,c.height);
    return c.toDataURL('image/jpeg',q);
   }
-  var full=render(900,0.72),thumb=render(110,0.5);
+  var full=render(640,0.62),thumb=render(110,0.5);
   URL.revokeObjectURL(url);cb(full,thumb);
  };
  img.onerror=function(){URL.revokeObjectURL(url);toast('Could not read that photo.');};
@@ -1430,18 +1461,25 @@ function photoFlow(full,thumb){
  }
  openSheet('<div class="grab"></div><h3>Reading the plate…</h3>'+
   '<img src="'+thumb+'" style="width:88px;height:88px;border-radius:14px;object-fit:cover;margin-top:13px">'+
-  '<div id="pst" style="font-size:13px;color:var(--mut);margin-top:14px">Sending to the AI. A few seconds.</div>');
+  '<div id="pst" style="font-size:13px;color:var(--mut);margin-top:14px">Sending\u2026</div>');
+ var _t0=Date.now(),_tick=setInterval(function(){
+  var e=document.getElementById('pst');
+  if(!e)return clearInterval(_tick);
+  var sec=Math.round((Date.now()-_t0)/1000);
+  if(sec>=2)e.textContent=sec+'s';
+ },400);
  gemini([
-  {text:'You estimate calories from a photo of a meal, usually South Indian home or restaurant food. '+
-   'Identify each item, estimate a realistic portion (count of idli, dosa or chapati; cups of rice; ml for a cup '+
-   'or glass) and its calories and protein. In "note", say in one short line what is on the plate. '+
+  {text:'Estimate calories from this meal photo. South Indian home or hotel food. Be fast and realistic, '+
+   'not generous. Count idli/dosa/chapati; cups for rice; ml for drinks. '+
    'Return ONLY JSON: '+
    '{"items":[{"name":"...","qty":N,"unit":"...","kcal":N,"protein_g":N}],"total":N,"confidence":"high|medium|low","note":"one short line"}. '+
    'Be realistic, not generous. If the photo is not food return {"items":[],"total":0,"confidence":"low","note":"not food"}.'},
   {inline_data:{mime_type:'image/jpeg',data:full.split(',')[1]}}
  ],function(j,err){
+  clearInterval(_tick);
   var el=document.getElementById('pst');
-  if(err||!j){if(el)el.innerHTML='<span style="color:var(--red)">'+esc(err||'No answer')+'</span>';return;}
+  if(err||!j){if(el)el.innerHTML='<span style="color:var(--red)">'+esc(err||'No answer')+'</span>'+
+   '<button class="go ghost" style="margin-top:12px" onclick="closeSheet();shoot()">Try again</button>';return;}
   showPhotoResult(j,meal,thumb);
  });
 }
@@ -1506,7 +1544,9 @@ function paintNav(){
   b.onclick=function(){go(b.dataset.t);};
  });
 }
-function go(t){TAB=t;paintNav();draw();window.scrollTo({top:0});}
+var PSPAN='month';
+function go(t){if(t!=='home'&&TAB==='home')pushGuard();
+ TAB=t;paintNav();draw();window.scrollTo({top:0});}
 function setMode(m){MODE=m;TAB='home';SUB='spending';SPAN='week';FDAY=null;paintNav();draw();window.scrollTo({top:0});}
 document.getElementById('fab').onclick=function(){MODE==='finance'?openAdd():openFood(mealNow());};
 
@@ -1598,7 +1638,8 @@ function draw(){
  chrome(true);
  document.getElementById('app').innerHTML = MODE==='finance'
   ? (TAB==='report'?finReport():TAB==='debt'?debtPage():TAB==='save'?savePage():
-     TAB==='gap'?gapPage():TAB==='bike'?bikePage():TAB==='setup'?setupPage():finHome())
+     TAB==='gap'?gapPage():TAB==='bike'?bikePage():TAB==='apps'?platformPage():
+     TAB==='week'?weekPage():TAB==='setup'?(setTimeout(paintStorage,60),setupPage()):finHome())
   : (TAB==='food'?foodPage():TAB==='move'?movePage():TAB==='hreport'?healthReport():healthHome());
 }
 function header(sub){
@@ -1629,7 +1670,74 @@ function qAct(){
 }
 function maybeChat(){}
 function setLang(l){D.settings.lang=l;save();draw();}
-function shoot(){pendingMeal=mealNow();document.getElementById('cam').click();}
+function shoot(){pendingMeal=mealNow();openCam();}
+
+/* ================= THE CAMERA =================
+   Shoots inside Momentum. The picture goes straight to the AI and into the meal.
+   Nothing is written to the phone's gallery. */
+var _camStream=null;
+function camFallback(){document.getElementById('cam').click();}
+function camStyle(){
+ if(document.getElementById('camcss'))return;
+ var st=document.createElement('style');st.id='camcss';
+ st.textContent='#camo{position:fixed;inset:0;z-index:9999;background:#000;display:none}'+
+  '#camo.on{display:block}'+
+  '#camv{width:100%;height:100%;object-fit:cover;background:#000}'+
+  '#cambar{position:absolute;left:0;right:0;bottom:0;padding:22px 20px calc(26px + env(safe-area-inset-bottom));'+
+  'display:flex;align-items:center;justify-content:space-between;'+
+  'background:linear-gradient(to top,rgba(0,0,0,.75),rgba(0,0,0,0))}'+
+  '#cambar button{background:none;border:0;color:#fff;font:600 15px/1 inherit;padding:12px;cursor:pointer}'+
+  '#camshot{width:70px;height:70px;border-radius:50%;background:#fff;border:4px solid rgba(255,255,255,.45);'+
+  'padding:0;flex:0 0 auto}'+
+  '#camshot:active{transform:scale(.93)}'+
+  '#camhint{position:absolute;left:0;right:0;top:calc(18px + env(safe-area-inset-top));text-align:center;'+
+  'color:#fff;font-size:13px;font-weight:600;text-shadow:0 1px 6px rgba(0,0,0,.6)}';
+ document.head.appendChild(st);
+}
+function openCam(){
+ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)return camFallback();
+ camStyle();
+ var o=document.getElementById('camo');
+ if(!o){
+  o=document.createElement('div');o.id='camo';
+  o.innerHTML='<video id="camv" playsinline autoplay muted></video>'+
+   '<div id="camhint">Hold the whole plate in frame</div>'+
+   '<div id="cambar"><button type="button" id="camx">Cancel</button>'+
+   '<button type="button" id="camshot"></button>'+
+   '<button type="button" id="camg">Gallery</button></div>';
+  document.body.appendChild(o);
+  o.querySelector('#camx').onclick=closeCam;
+  o.querySelector('#camg').onclick=function(){closeCam();camFallback();};
+  o.querySelector('#camshot').onclick=snap;
+ }
+ o.classList.add('on');
+ navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},
+  width:{ideal:1280},height:{ideal:1280}}})
+  .then(function(st){_camStream=st;
+   var v=document.getElementById('camv');
+   if(!v)return;v.srcObject=st;v.play().catch(function(){});})
+  .catch(function(){closeCam();
+   toast('Camera not allowed \u2014 opening your files instead.');camFallback();});
+}
+function closeCam(){
+ var o=document.getElementById('camo');if(o)o.classList.remove('on');
+ var v=document.getElementById('camv');if(v)try{v.srcObject=null;}catch(e){}
+ if(_camStream){try{_camStream.getTracks().forEach(function(t){t.stop();});}catch(e){}_camStream=null;}
+}
+function snap(){
+ var v=document.getElementById('camv');
+ if(!v||!v.videoWidth)return toast('The camera is still waking up.');
+ function grab(max,q){
+  var sc=Math.min(1,max/Math.max(v.videoWidth,v.videoHeight));
+  var c=document.createElement('canvas');
+  c.width=Math.max(1,Math.round(v.videoWidth*sc));
+  c.height=Math.max(1,Math.round(v.videoHeight*sc));
+  c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+  return c.toDataURL('image/jpeg',q);
+ }
+ var full=grab(640,0.62),thumb=grab(110,0.5);
+ closeCam();photoFlow(full,thumb);
+}
 function runQuick(){
  var el=document.getElementById('qq');if(!el)return;
  var t=el.value.trim();if(!t)return;
@@ -1672,6 +1780,9 @@ function finHome(){
    (free>=0?R(free)+' free after '+R(dueLeft())+' still due · '+daysToSalary()+' days to salary'
            :'Short '+R(-free)+' against '+R(dueLeft())+' still due this month')+'</div></div></div>';
 
+ h+=usualChips();
+ h+=runwayCard();
+
  h+='<div class="sec"><div class="pair">'+
   '<div class="card" onclick="SUB=\'income\';SPAN=\'month\';go(\'report\')">'+
    '<div class="mic">▼ Earned</div><div class="v grn">'+R(sum(txIn('month','in')))+'</div>'+
@@ -1713,6 +1824,27 @@ function finHome(){
   h+='<div class="ban plain" style="align-items:center"><span class="ic">\u21B6</span>'+
    '<div>Just changed something by mistake?</div>'+
    '<button class="chip" onclick="undo()">Undo</button></div>';
+
+ var P0=platformStats('month');
+ if(P0.list.length>1){
+  var b0=P0.list[0];
+  h+='<div class="sec"><div class="card" onclick="go(\'apps\')">'+
+   '<div style="display:flex;align-items:center;gap:12px">'+
+   '<div class="tile" style="background:var(--mint)">'+b0.icon+'</div>'+
+   '<div style="flex:1"><b style="font-size:14px">What each app really pays</b>'+
+   '<div style="font-size:11.5px;color:var(--mut);margin-top:3px">'+
+    esc(b0.name)+' is ahead'+(b0.perKm?' at \u20B9'+b0.perKm+' a km after petrol':
+     ' on '+R(b0.net)+' after petrol')+'</div></div>'+
+   '<span style="color:var(--mut);font-size:18px">\u203A</span></div></div></div>';
+ }
+
+ h+='<div class="sec"><div class="card" onclick="go(\'week\')">'+
+  '<div style="display:flex;align-items:center;gap:12px">'+
+  '<div class="tile" style="background:#F2EFE6">\u25F4</div>'+
+  '<div style="flex:1"><b style="font-size:14px">Your week</b>'+
+  '<div style="font-size:11.5px;color:var(--mut);margin-top:3px">'+
+   'Seven days in one screen, and one thing worth changing</div></div>'+
+  '<span style="color:var(--mut);font-size:18px">\u203A</span></div></div></div>';
 
  var fs0=fuelStats();
  h+='<div class="sec"><div class="card" onclick="go(\'bike\')">'+
@@ -1976,6 +2108,68 @@ function gap(){
  return {income:inc,committed:out,saving:save2,left:inc-out-save2};
 }
 function freedBy(d){return d.emi||0;}
+/* Months to clear a balance at a given payment, with interest if the rate is known. */
+function monthsExact(left,pay,ratePct){
+ if(!(pay>0)||!(left>0))return null;
+ var r=(Number(ratePct)||0)/1200;
+ if(!r)return left/pay;
+ if(pay<=left*r)return null;              /* the payment never beats the interest */
+ return Math.log(pay/(pay-left*r))/Math.log(1+r);
+}
+function monthsToClear(left,pay,ratePct){
+ var m=monthsExact(left,pay,ratePct);
+ return m==null?null:Math.ceil(m);
+}
+/* The last payment is almost never a full one, so the exact month count is what
+   decides the total. Rounding it up first made a faster plan look dearer. */
+function totalPaid(left,pay,ratePct){
+ var m=monthsExact(left,pay,ratePct);
+ if(m==null)return null;
+ return Math.round(pay*m);
+}
+/* What one extra rupee a month buys on a given loan. */
+function extraEffect(d,extra){
+ var base=monthsToClear(d.left,d.emi,d.rate);
+ var fast=monthsToClear(d.left,(d.emi||0)+extra,d.rate);
+ if(base==null||fast==null)return null;
+ var tb=totalPaid(d.left,d.emi,d.rate),tf=totalPaid(d.left,(d.emi||0)+extra,d.rate);
+ return {base:base,fast:fast,sooner:base-fast,
+  saved:(tb!=null&&tf!=null)?Math.max(0,Math.round(tb-tf)):0};
+}
+var EXTRA=2000;
+function extraSheet(){
+ var live=liveDebts().filter(function(d){return d.left>0&&d.emi>0;});
+ if(!live.length)return toast('No loan with a monthly amount to work on.');
+ var rows=live.map(function(d){
+  var e=extraEffect(d,EXTRA);
+  return {d:d,e:e};
+ }).filter(function(x){return x.e;})
+   .sort(function(a,b){return (b.e.saved-a.e.saved)||(b.e.sooner-a.e.sooner);});
+ openSheet('<div class="grab"></div><h3>Put '+R(EXTRA)+' extra a month</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px;line-height:1.5">'+
+  'Same money, different loan. This is what it buys on each one.</div>'+
+  '<div class="chips" style="margin-top:12px">'+
+   [500,1000,2000,5000].map(function(v){
+    return '<button class="'+(EXTRA===v?'on':'')+'" onclick="EXTRA='+v+';extraSheet()">'+
+     R(v)+'</button>';}).join('')+'</div>'+
+  (rows.length?'<div class="list" style="margin-top:14px">'+rows.map(function(x){
+   return '<div class="row"><div class="nm"><b>'+esc(x.d.name)+'</b><i>'+
+    R(x.d.left)+' left at '+R(x.d.emi)+' a month'+
+    (x.d.rate?' \u00B7 '+x.d.rate+'%':'')+'</i></div>'+
+    '<div style="margin-left:auto;text-align:right">'+
+    '<b class="grn">'+x.e.sooner+' mo sooner</b>'+
+    (x.e.saved?'<div style="font-size:11px;color:var(--mut);margin-top:2px">saves '+
+      R(x.e.saved)+'</div>':'')+'</div></div>';
+  }).join('')+'</div>'
+  :'<div style="font-size:13px;color:var(--mut);margin-top:14px">Not enough detail yet. '+
+   'Add the monthly amount on each loan.</div>')+
+  (rows.length&&!rows.some(function(x){return x.d.rate;})
+   ?'<div class="ban plain" style="margin-top:14px"><span class="ic">\u2139</span><div>'+
+    'None of these has an interest rate saved, so this only counts months, not money saved. '+
+    'Add the rate on a loan and the saving appears.</div></div>':'')+
+  '<button class="go ghost" onclick="closeSheet()">Close</button>');
+}
+
 function payoffOrder(){
  var live=liveDebts().filter(function(d){return d.left>0;});
  var fast=live.slice().sort(function(a,b){
@@ -1987,6 +2181,248 @@ function payoffOrder(){
   return br-ar;});
  return {fast:fast,heavy:heavy};
 }
+/* ================= WHAT EACH APP ACTUALLY PAYS =================
+   Gross earnings flatter a gig app. Petrol is the cost of making them, so each app
+   carries a share of the day's fuel and the day's kilometres in proportion to what it
+   paid that day. That is an allocation, not a measurement, and the screen says so. */
+function platformStats(span){
+ var r=range(span),byDay={};
+ D.tx.forEach(function(t){
+  if(t.type!=='in'||!t.src||t.src==='salary')return;
+  if(t.date<r[0]||t.date>r[1])return;
+  var d=byDay[t.date]=byDay[t.date]||{earn:{},tot:0};
+  d.earn[t.src]=(d.earn[t.src]||0)+t.amount;d.tot+=t.amount;
+ });
+ var acc={};
+ Object.keys(byDay).forEach(function(d){
+  var day=byDay[d];
+  var fuel=D.tx.filter(function(t){
+   return t.type==='out'&&t.cat==='Fuel'&&t.date===d;})
+   .reduce(function(x,t){return x+t.amount;},0);
+  var km=kmOn(d);
+  Object.keys(day.earn).forEach(function(sid){
+   var share=day.tot?day.earn[sid]/day.tot:0;
+   var a=acc[sid]=acc[sid]||{id:sid,earn:0,fuel:0,km:0,days:0,trips:0};
+   a.earn+=day.earn[sid];a.fuel+=fuel*share;a.km+=km*share;a.days++;
+  });
+ });
+ D.tx.forEach(function(t){
+  if(t.type==='in'&&t.src&&acc[t.src]&&t.date>=r[0]&&t.date<=r[1])acc[t.src].trips++;
+ });
+ var list=Object.keys(acc).map(function(k){
+  var a=acc[k];
+  a.net=Math.round(a.earn-a.fuel);
+  a.fuel=Math.round(a.fuel);a.km=Math.round(a.km);
+  a.perKm=a.km?Math.round(a.net/a.km*100)/100:0;
+  a.perDay=a.days?Math.round(a.net/a.days):0;
+  a.perTrip=a.trips?Math.round(a.net/a.trips):0;
+  a.name=src(k).name;a.icon=src(k).icon;
+  return a;
+ }).sort(function(x,y){
+  if(x.perKm!==y.perKm)return y.perKm-x.perKm;
+  return y.net-x.net;});
+ return {list:list,haveKm:list.some(function(a){return a.km>0;})};
+}
+function platformPage(){
+ var P=platformStats(PSPAN),h='<div class="wrap">'+header('What each app really pays');
+ h+='<div class="sec"><div class="chips">'+
+  ['week','month','30'].map(function(sp){
+   return '<button class="'+(PSPAN===sp?'on':'')+'" onclick="PSPAN=\''+sp+'\';draw()">'+
+    (sp==='week'?'7 days':sp==='month'?'This month':'30 days')+'</button>';}).join('')+
+  '</div></div>';
+
+ if(!P.list.length)
+  return h+'<div class="sec"><div class="card"><div style="font-size:13px;color:var(--mut);'+
+   'line-height:1.6">Nothing to compare yet. Log a few days of gig earnings and your petrol, '+
+   'and this fills in.</div></div></div><div style="height:16px"></div></div>';
+
+ var best=P.list[0],worst=P.list[P.list.length-1];
+ if(P.haveKm&&P.list.length>1&&best.perKm>0)
+  h+='<div class="sec"><div class="card" style="background:var(--g1);color:#fff;border-color:transparent">'+
+   '<div class="mic" style="color:rgba(255,255,255,.6)">Best per kilometre</div>'+
+   '<div class="big" style="margin-top:5px">'+esc(best.name)+'</div>'+
+   '<div style="font-size:12.5px;opacity:.84;margin-top:8px;line-height:1.6">'+
+   '\u20B9'+best.perKm+' a km after petrol'+
+   (worst.perKm>0&&worst.id!==best.id
+    ?', against \u20B9'+worst.perKm+' on '+esc(worst.name)+'.':'.')+'</div></div></div>';
+
+ h+='<div class="sec"><div class="sechead"><h2>After petrol</h2>'+
+  '<span class="more">'+(PSPAN==='week'?'7 days':PSPAN==='month'?'this month':'30 days')+
+  '</span></div><div class="list">'+
+  P.list.map(function(a){
+   return '<div class="row"><div class="tile" style="background:var(--mint)">'+a.icon+'</div>'+
+    '<div class="nm"><b>'+esc(a.name)+'</b><i>'+R(a.earn)+' earned \u2212 '+R(a.fuel)+' petrol'+
+    (a.km?' \u00B7 '+N(a.km)+' km':'')+'</i></div>'+
+    '<div style="margin-left:auto;text-align:right">'+
+    '<b class="'+(a.net>=0?'grn':'red')+'" style="font-size:16px">'+
+     (a.net>=0?R(a.net):'\u2212'+R(-a.net))+'</b>'+
+    (a.perKm?'<div style="font-size:11px;color:var(--mut);margin-top:2px">\u20B9'+a.perKm+
+     ' a km</div>':'')+'</div></div>';
+  }).join('')+'</div></div>';
+
+ h+='<div class="sec"><div class="sechead"><h2>Per day you worked it</h2></div><div class="list">'+
+  P.list.slice().sort(function(x,y){return y.perDay-x.perDay;}).map(function(a){
+   return '<div class="row"><div class="tile" style="background:var(--mint)">'+a.icon+'</div>'+
+    '<div class="nm"><b>'+esc(a.name)+'</b><i>'+a.days+' day'+(a.days===1?'':'s')+
+    ' \u00B7 '+a.trips+' entr'+(a.trips===1?'y':'ies')+'</i></div>'+
+    '<b style="margin-left:auto">'+R(a.perDay)+'</b></div>';
+  }).join('')+'</div></div>';
+
+ h+='<div class="ban plain"><span class="ic">\u2139</span><div>'+
+  (P.haveKm
+   ?'Petrol and kilometres are split between the apps in proportion to what each one paid that day. '+
+    'It is the fairest split without you tagging every trip.'
+   :'Add your odometer at the start and end of a riding day on the bike screen, and this turns into '+
+    'rupees per kilometre.')+'</div></div>';
+ return h+'<div style="height:16px"></div></div>';
+}
+
+/* ================= WHAT IS STILL TO FIND =================
+   The month ahead, as a number of riding days rather than a worry. */
+function runway(){
+ var unpaid=dues().filter(function(x){return !isPaid(x.id);})
+  .reduce(function(s,x){return s+x.amount;},0);
+ var have=liquid(),short=unpaid-have,days=daysToSalary();
+ var r=range('month'),byDay={};
+ D.tx.forEach(function(t){
+  if(t.date<r[0]||t.date>r[1])return;
+  if(t.type==='in'&&t.src&&t.src!=='salary')byDay[t.date]=(byDay[t.date]||0)+t.amount;
+  else if(t.type==='out'&&t.cat==='Fuel')byDay[t.date]=(byDay[t.date]||0)-t.amount;
+ });
+ var vals=Object.keys(byDay).map(function(k){return byDay[k];})
+  .filter(function(v){return v>0;});
+ var rate=vals.length?Math.round(vals.reduce(function(a,b){return a+b;},0)/vals.length):0;
+ return {unpaid:unpaid,have:have,short:short,days:days,rate:rate,
+  need:(short>0&&rate>0)?Math.ceil(short/rate):0};
+}
+function runwayCard(){
+ var w=runway();
+ if(!w.unpaid)return '';
+ if(w.short<=0)
+  return '<div class="sec"><div class="card" onclick="go(\'gap\')">'+
+   '<div class="mic">Before salary</div>'+
+   '<div style="font-size:14px;font-weight:700;margin-top:6px;line-height:1.5">'+
+   'Everything still due is covered.</div>'+
+   '<div style="font-size:12px;color:var(--mut);margin-top:5px">'+
+   R(w.unpaid)+' to pay, '+R(w.have)+' in hand, '+w.days+' day'+(w.days===1?'':'s')+' to go.'+
+   '</div></div></div>';
+ return '<div class="sec"><div class="card" onclick="go(\'gap\')" '+
+  'style="border-color:var(--amber)">'+
+  '<div class="mic">Still to find</div>'+
+  '<div class="big" style="margin-top:5px;color:var(--red)">'+R(w.short)+'</div>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:8px;line-height:1.6">'+
+  R(w.unpaid)+' still due, '+R(w.have)+' in hand, '+w.days+' day'+(w.days===1?'':'s')+
+  ' to salary.'+
+  (w.need?'<br><b style="color:var(--ink)">About '+w.need+' more riding day'+
+   (w.need===1?'':'s')+'</b> at your recent '+R(w.rate)+' a day after petrol.'
+   :'<br>Log a few riding days and I can tell you how many more it takes.')+
+  '</div></div></div>';
+}
+
+/* ================= THE WEEK, LOOKED BACK ON =================
+   Seven days in one screen, and one thing worth changing. Not a notification. */
+function weekBounds(back){
+ var n=new Date();n.setHours(12,0,0,0);
+ n.setDate(n.getDate()-(back||0)*7);
+ var dow=n.getDay();                       /* 0 Sun */
+ var end=new Date(n);end.setDate(n.getDate()-dow+(dow===0?0:7-dow>0?-dow:0));
+ /* week runs Monday..Sunday and ends on the Sunday of this week */
+ var mon=new Date(n);mon.setDate(n.getDate()-((dow+6)%7));
+ var sun=new Date(mon);sun.setDate(mon.getDate()+6);
+ return [mon.toISOString().slice(0,10),sun.toISOString().slice(0,10)];
+}
+function weekStats(back){
+ var b=weekBounds(back),a=b[0],z=b[1];
+ var inn=D.tx.filter(function(t){return t.type==='in'&&t.date>=a&&t.date<=z;});
+ var out=D.tx.filter(function(t){return t.type==='out'&&t.date>=a&&t.date<=z;});
+ var fuel=out.filter(function(t){return t.cat==='Fuel';});
+ var km=0,days=0;
+ for(var i=0;i<7;i++){
+  var d=new Date(a+'T12:00');d.setDate(d.getDate()+i);
+  var k=d.toISOString().slice(0,10);
+  if(k>today())break;
+  km+=kmOn(k);days++;
+ }
+ var ws=[],we=null,wStart=null;
+ for(var j=0;j<7;j++){
+  var d2=new Date(a+'T12:00');d2.setDate(d2.getDate()+j);
+  var k2=d2.toISOString().slice(0,10);
+  var w=(D.hlog[k2]||{}).weight;
+  if(w){if(wStart==null)wStart=w;we=w;}
+ }
+ var cats={};
+ out.forEach(function(t){var c=t.cat||'Other';cats[c]=(cats[c]||0)+t.amount;});
+ var top=Object.keys(cats).map(function(c){return {name:c,value:cats[c]};})
+  .sort(function(x,y){return y.value-x.value;});
+ return {from:a,to:z,days:days,
+  earned:sum(inn),spent:sum(out),fuel:sum(fuel),km:km,
+  net:sum(inn)-sum(out),top:top,
+  wStart:wStart,wEnd:we,
+  wDelta:(wStart!=null&&we!=null)?Math.round((we-wStart)*10)/10:null};
+}
+/* One thing to change, drawn from the week rather than from a list of platitudes. */
+function weekLesson(w,prev){
+ var L=[];
+ if(w.net<0&&w.spent)
+  L.push('You spent '+R(-w.net)+' more than came in. The biggest single line was '+
+   w.top[0].name.toLowerCase()+' at '+R(w.top[0].value)+'.');
+ if(w.km&&w.fuel){
+  var pk=Math.round(w.fuel/w.km*100)/100;
+  if(w.earned){
+   var per=Math.round((w.earned-w.fuel)/w.km*100)/100;
+   L.push(N(w.km)+' km cost \u20B9'+pk+' a km in petrol and returned \u20B9'+per+' a km after it.');
+  }
+ }
+ if(prev&&prev.earned&&w.earned){
+  var dd=w.earned-prev.earned;
+  if(Math.abs(dd)>=200)
+   L.push(dd>0?'You earned '+R(dd)+' more than the week before.'
+               :'You earned '+R(-dd)+' less than the week before.');
+ }
+ if(w.wDelta!=null&&w.wDelta!==0)
+  L.push(w.wDelta<0?'Down '+Math.abs(w.wDelta)+' kg over the week.'
+                   :'Up '+w.wDelta+' kg over the week.');
+ if(!L.length)L.push('Too little logged this week to say anything useful. '+
+  'A week with most days filled in gives you a real read.');
+ return L;
+}
+var WBACK=0;
+function weekPage(){
+ var w=weekStats(WBACK),prev=weekStats(WBACK+1);
+ var h='<div class="wrap">'+header('Your week');
+ h+='<div class="sec"><div class="chips">'+
+  '<button class="'+(WBACK===0?'on':'')+'" onclick="WBACK=0;draw()">This week</button>'+
+  '<button class="'+(WBACK===1?'on':'')+'" onclick="WBACK=1;draw()">Last week</button>'+
+  '<button class="'+(WBACK===2?'on':'')+'" onclick="WBACK=2;draw()">Two back</button>'+
+  '</div></div>';
+ h+='<div class="sec"><div class="card" style="background:'+
+  (w.net>=0?'var(--g1)':'#7C2D26')+';color:#fff;border-color:transparent">'+
+  '<div class="mic" style="color:rgba(255,255,255,.6)">'+
+   dshort(w.from)+' \u2013 '+dshort(w.to)+'</div>'+
+  '<div class="big" style="margin-top:5px">'+(w.net>=0?R(w.net):'\u2212'+R(-w.net))+'</div>'+
+  '<div style="font-size:12.5px;opacity:.82;margin-top:8px">'+
+   R(w.earned)+' in, '+R(w.spent)+' out'+(w.km?' \u00B7 '+N(w.km)+' km':'')+'</div></div></div>';
+
+ h+='<div class="sec"><div class="macro">'+
+  '<div><div class="mic">Earned</div><b class="grn">'+R(w.earned)+'</b></div>'+
+  '<div><div class="mic">Petrol</div><b class="red">'+R(w.fuel)+'</b></div>'+
+  '<div><div class="mic">Weight</div><b>'+
+   (w.wDelta==null?'\u2014':(w.wDelta>0?'+':'')+w.wDelta+' kg')+'</b></div></div></div>';
+
+ if(w.top.length)
+  h+='<div class="sec"><div class="sechead"><h2>Where it went</h2></div><div class="list">'+
+   w.top.slice(0,5).map(function(c){
+    return '<div class="row"><div class="nm"><b>'+esc(c.name)+'</b></div>'+
+     '<b style="margin-left:auto" class="red">'+R(c.value)+'</b></div>';}).join('')+
+   '</div></div>';
+
+ h+='<div class="sec"><div class="sechead"><h2>Worth noticing</h2></div><div class="card">'+
+  weekLesson(w,prev).map(function(l){
+   return '<div style="font-size:13.5px;line-height:1.65;margin-bottom:10px">\u2022 '+esc(l)+'</div>';
+  }).join('')+'</div></div>';
+ return h+'<div style="height:16px"></div></div>';
+}
+
 function gapPage(){
  var g=gap(),o=payoffOrder();
  var h='<div class="wrap">'+header('Where you actually stand');
@@ -1999,6 +2435,14 @@ function gapPage(){
   '<div style="font-size:12.5px;opacity:.82;margin-top:9px;line-height:1.6">'+
    R(g.income)+' comes in.<br>'+R(g.committed)+' is already promised to loans and bills.'+
    (g.saving?'<br>'+R(g.saving)+' you have set aside to save.':'')+'</div></div></div>';
+
+ if(liveDebts().filter(function(d){return d.left>0&&d.emi>0;}).length)
+  h+='<div class="sec"><div class="card" onclick="extraSheet()">'+
+   '<div style="display:flex;align-items:center;gap:12px"><div style="flex:1">'+
+   '<b style="font-size:14px">If you paid a bit extra</b>'+
+   '<div style="font-size:11.5px;color:var(--mut);margin-top:3px">'+
+   'Same money, different loan \u2014 what each one buys</div></div>'+
+   '<span style="color:var(--mut);font-size:18px">\u203A</span></div></div></div>';
 
  if(g.left<0)
   h+='<div class="ban warn"><span class="ic">!</span><div>No tracker closes a gap this size. '+
@@ -2694,7 +3138,7 @@ function clearChat(){CHAT=[];CHAT_PHOTO=null;draw();}
 function chatScroll(){
  setTimeout(function(){window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});},60);
 }
-function chatShoot(){pendingMeal='__chat__';document.getElementById('cam').click();}
+function chatShoot(){pendingMeal='__chat__';openCam();}
 function chatMic(){listen();}
 
 function chatSend(preset){
@@ -2833,7 +3277,7 @@ function runActions(list,thumb){
 }
 
 /* ===== self test: turns guesswork into facts ===== */
-var APP_VERSION='2026-11-12b';
+var APP_VERSION='2026-11-13c';
 function diagSheet(){
  openSheet('<div class="grab"></div><h3>Self test</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
@@ -2866,7 +3310,7 @@ function copyDiag(){
 }
 function runDiag(){
  DIAG=[];
- diagLine('App version',APP_VERSION==='2026-11-12b'?'ok':'warn',APP_VERSION);
+ diagLine('App version',APP_VERSION==='2026-11-13c'?'ok':'warn',APP_VERSION);
  var where=location.hostname||'local file';
  diagLine('Running from',blocked()?'no':'ok',
   blocked()?where+' \u2014 inside Claude, outside calls are blocked here':where);
@@ -3220,25 +3664,61 @@ function litresOf(f){
  if(f.litres)return f.litres;
  return f.rupees&&f.price?Math.round(f.rupees/f.price*100)/100:0;
 }
-function addFuel(km,rupees,litres,note){
+function addFuel(km,rupees,litres,note,when){
  km=Number(km)||0;
  if(!km)return toast('I need the odometer reading.');
  var last=fuels()[fuels().length-1];
  if(last&&km<last.km)return toast('That reading is lower than the last one ('+N(last.km)+' km).');
  mark('that fill-up');
- var price=petrolPrice();
- var rec={id:nid(),date:today(),km:km,
+ var price=petrolPrice(),dt=when||today();
+ var rec={id:nid(),date:dt,km:km,
   rupees:Number(rupees)||(litres?Math.round(litres*price):0),
   litres:Number(litres)||0,price:price,note:note||''};
  D.fuel=(D.fuel||[]).concat([rec]);
- if(rec.rupees)D.tx.push({id:nid(),date:today(),amount:rec.rupees,type:'out',cat:'Fuel',
-  note:'Petrol at '+N(km)+' km',acct:D.accounts[0].id,fuelId:rec.id});
+ var adopted=null;
+ if(rec.rupees){
+  /* If the same petrol was already typed in as an ordinary spend, attach the fill-up
+     to THAT entry instead of adding a second one. Counting it twice was the old bug. */
+  adopted=orphanFuelTx(rec.rupees,dt);
+  if(adopted){adopted.fuelId=rec.id;adopted.date=dt;
+   adopted.note='Petrol at '+N(km)+' km';}
+  else D.tx.push({id:nid(),date:dt,amount:rec.rupees,type:'out',cat:'Fuel',
+   note:'Petrol at '+N(km)+' km',acct:D.accounts[0].id,fuelId:rec.id});
+ }
  save();
  var st=fuelStats();
  var msg=R(rec.rupees)+' petrol at '+N(km)+' km';
- if(st.last)msg+=' \u2014 last tank gave '+st.last.kmpl+' km/l';
+ if(adopted)msg+=' \u2014 joined to the entry you already made, not counted twice';
+ else if(st.last)msg+=' \u2014 last tank gave '+st.last.kmpl+' km/l';
  draw();toast(msg);
  return rec;
+}
+/* A Fuel spend of the same size, within two days, that no fill-up has claimed yet. */
+function orphanFuelTx(amount,dt){
+ var t0=new Date(dt+'T00:00:00').getTime();
+ var hit=D.tx.filter(function(t){
+  if(t.type!=='out'||t.fuelId||t.cat!=='Fuel')return false;
+  if(Math.round(t.amount)!==Math.round(amount))return false;
+  var d=new Date(t.date+'T00:00:00').getTime();
+  return Math.abs(d-t0)<=2*864e5;
+ });
+ return hit[0]||null;
+}
+/* Petrol counted twice: a Fuel spend with no fill-up behind it, sitting on the same day
+   and the same amount as one that has. Shown in Setup so nothing is removed silently. */
+function fuelDupes(){
+ var out=[];
+ (D.fuel||[]).forEach(function(f){
+  var own=D.tx.filter(function(t){return t.fuelId===f.id;});
+  if(!own.length)return;
+  D.tx.forEach(function(t){
+   if(t.fuelId||t.type!=='out'||t.cat!=='Fuel')return;
+   if(Math.round(t.amount)!==Math.round(f.rupees))return;
+   var a=new Date(t.date+'T00:00:00').getTime(),b=new Date(f.date+'T00:00:00').getTime();
+   if(Math.abs(a-b)<=2*864e5&&out.indexOf(t)<0)out.push(t);
+  });
+ });
+ return out;
 }
 function fuelStats(){
  var f=fuels(),legs=[];
@@ -3365,6 +3845,8 @@ function fuelSheet(){
  openSheet('<div class="grab"></div><h3>Fill-up</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
   (last?'Last one was at '+N(last.km)+' km.':'The first reading just sets the starting point.')+'</div>'+
+  '<div class="mic" style="margin-top:16px">Day you filled</div>'+
+  '<input id="fu_date" type="date" value="'+today()+'" max="'+today()+'">'+
   '<div class="mic" style="margin-top:16px">Odometer now (km)</div>'+
   '<input id="fu_km" type="number" inputmode="numeric" placeholder="'+(last?N(last.km+300):'3408')+'">'+
   '<div class="mic" style="margin-top:16px">How much you put in</div>'+
@@ -3395,8 +3877,9 @@ function saveFuel(){
  var km=v('fu_km');
  if(!km)return toast('Put in the odometer reading.');
  if(!v('fu_rs')&&!v('fu_l'))return toast('How much went in?');
+ var dt=(document.getElementById('fu_date')||{}).value||today();
  closeSheet();
- addFuel(km,v('fu_rs'),v('fu_l'));
+ addFuel(km,v('fu_rs'),v('fu_l'),'',dt);
 }
 function editFuel(id){
  var r=(D.fuel||[]).filter(function(x){return x.id===id;})[0];if(!r)return;
@@ -4172,6 +4655,39 @@ function setupPage(){
    (D.settings.pin?(D.settings.bio?'Fingerprint and PIN are on':'Add fingerprint, or remove the PIN')
     :'Set a PIN')+
   '</button></div></div>';
+ h+='<div class="sec"><div class="sechead"><h2>Space</h2><span class="more" id="stfill">\u2026</span>'+
+  '</div><div class="card">'+
+  '<div style="height:8px;border-radius:5px;background:var(--line);overflow:hidden">'+
+   '<div id="stbar" style="height:100%;width:0;background:var(--g2);transition:width .5s"></div></div>'+
+  '<div id="sttxt" style="font-size:12.5px;color:var(--mut);line-height:1.55;margin-top:11px">'+
+  'Measuring\u2026</div></div></div>';
+
+ h+='<div class="sec"><div class="sechead"><h2>Reminders</h2><span class="more">'+
+  (remOn()&&remPerm()==='granted'?'on':'off')+'</span></div><div class="card">'+
+  (remPerm()!=='granted'||!remOn()
+   ?'<div style="font-size:12.5px;color:var(--mut);line-height:1.5">Water through the day, money '+
+    'falling due, and a nudge at night if nothing is written down. Android has to allow it first.</div>'+
+    '<button class="go" onclick="askRem()">Turn reminders on</button>'
+   :'<div style="font-size:12.5px;color:var(--mut);line-height:1.5">These arrive while Momentum is '+
+    'open or recently used. A phone that has fully shut the app cannot be woken by it.</div>'+
+    remRow('water','Water through the day')+
+    remRow('due','Money due in the next two days')+
+    remRow('log','Nothing logged by 9pm')+
+    '<button class="go ghost" onclick="fire(\'Momentum\',\'This is what a reminder looks like.\')">'+
+    'Send me a test one</button>')+
+  '</div></div>';
+
+ var _fd=fuelDupes();
+ if(_fd.length)h+='<div class="sec"><div class="sechead"><h2>Petrol counted twice</h2>'+
+  '<span class="more">'+_fd.length+'</span></div><div class="card">'+
+  '<div style="font-size:12.5px;color:var(--mut);line-height:1.5">The same fill-up looks like it '+
+  'went in twice \u2014 once as text, once on the bike screen.</div>'+
+  '<div class="list" style="margin-top:10px">'+_fd.map(function(t){
+   return '<div class="row"><div class="nm"><b>'+esc(t.note||'Fuel')+'</b><i>'+
+    dshort(t.date)+'</i></div><b class="red">'+R(t.amount)+'</b></div>';}).join('')+'</div>'+
+  '<button class="go" onclick="dropFuelDupes()">Remove '+
+  (_fd.length===1?'it':'these '+_fd.length)+'</button></div></div>';
+
  h+='<div class="sec"><div class="sechead"><h2>Backup</h2><span class="more" id="stormode">…</span></div>'+
   '<div class="card">'+
   '<div style="font-size:12.5px;color:var(--mut);line-height:1.5">Everything lives on this phone. '+
@@ -4183,6 +4699,39 @@ function setupPage(){
   '<button class="go ghost" onclick="exportCsv()">Export CSV</button>'+
   '<button class="go red" onclick="wipe()">Erase everything</button></div></div>';
  return h+'<div style="height:16px"></div></div>';
+}
+/* How full the phone's share is, and roughly how long that leaves at this rate. */
+function storageUse(){
+ var bytes=0;
+ try{bytes=(localStorage.getItem(KEY)||'').length*2;}catch(e){}
+ var cap=5*1024*1024;                       /* the usual per-site localStorage budget */
+ var used=bytes*2;                          /* the app keeps a second copy as insurance */
+ var first=null;
+ D.tx.forEach(function(t){if(!first||t.date<first)first=t.date;});
+ Object.keys(D.food||{}).forEach(function(d){if(!first||d<first)first=d;});
+ var days=first?Math.max(1,Math.round((Date.now()-new Date(first+'T12:00'))/864e5)):0;
+ var perDay=days?used/days:0;
+ var yearsLeft=perDay?((cap-used)/perDay)/365:null;
+ return {used:used,cap:cap,pct:Math.min(100,Math.round(used/cap*100)),
+  days:days,perYear:perDay*365,years:yearsLeft};
+}
+function paintStorage(){
+ var el=document.getElementById('stbar');if(!el)return;
+ var s=storageUse();
+ el.style.width=Math.max(2,s.pct)+'%';
+ el.style.background=s.pct>80?'var(--red)':s.pct>55?'var(--amber)':'var(--g2)';
+ var f=document.getElementById('stfill');
+ if(f)f.textContent=s.pct+'% used';
+ var t=document.getElementById('sttxt');
+ if(!t)return;
+ var mb=(s.used/1048576).toFixed(2);
+ t.innerHTML=mb+' MB of about 5 MB, across two copies.'+
+  (s.days>13&&s.perYear
+   ?'<br>Growing about '+(s.perYear/1048576).toFixed(2)+' MB a year at your current rate'+
+    (s.years!=null?', which leaves roughly '+(s.years>=10?'ten years or more':
+      s.years<1?'under a year':Math.round(s.years)+' years'):'')+'.'
+   :'<br>A couple more weeks of logging and I can tell you how long this lasts.')+
+  (s.pct>70?'<br><b>Worth taking a backup and telling me \u2014 I will move the store.</b>':'');
 }
 function keyMask(){
  var k=D.ai.key||'';
@@ -4310,9 +4859,49 @@ function editTx(id){
   '<div class="mic" style="margin-top:15px">Date</div>'+
   '<input id="e_date" type="date" value="'+t.date+'">'+
   '<button class="go" onclick="saveTx(\''+id+'\')">Save changes</button>'+
+  (t.type==='move'||t.date===today()?'':
+   '<button class="go ghost" onclick="repeatTx(\''+id+'\')">Log this again today</button>')+
   '<button class="go red" onclick="delTx(\''+id+'\')">Delete this entry</button>'+
   '<button class="go ghost" onclick="closeSheet()">Cancel</button>');
 }
+/* ================= THE THINGS YOU DO EVERY DAY =================
+   Most entries are the same entry again. One tap beats typing it out. */
+function repeatTx(id){
+ var t=D.tx.filter(function(x){return x.id===id;})[0];if(!t)return;
+ mark('that repeat');
+ var c={};Object.keys(t).forEach(function(k){c[k]=t[k];});
+ c.id=nid();c.date=today();delete c.fuelId;
+ D.tx.push(c);save();closeSheet();draw();
+ toastUndo(R(c.amount)+' \u2014 '+(c.note||c.cat||'logged')+' again today');
+}
+/* The handful of entries worth a one-tap button: same wording, same money, seen often. */
+function usuals(){
+ var cut=new Date(Date.now()-45*864e5).toISOString().slice(0,10),t=today(),by={};
+ D.tx.forEach(function(x){
+  if(x.date<cut||x.type==='move')return;
+  var note=(x.note||x.cat||'').trim();
+  if(!note)return;
+  var k=x.type+'|'+note.toLowerCase()+'|'+Math.round(x.amount);
+  var e=by[k]=by[k]||{n:0,last:'',tx:x,today:false};
+  e.n++;if(x.date>e.last){e.last=x.date;e.tx=x;}
+  if(x.date===t)e.today=true;
+ });
+ return Object.keys(by).map(function(k){return by[k];})
+  .filter(function(e){return e.n>=3&&!e.today;})
+  .sort(function(a,b){return b.n-a.n||(a.last<b.last?1:-1);})
+  .slice(0,5);
+}
+function usualChips(){
+ var u=usuals();if(!u.length)return '';
+ return '<div class="sec"><div class="sechead"><h2>The usual</h2>'+
+  '<span class="more">one tap</span></div><div class="chips">'+
+  u.map(function(e){
+   var t=e.tx;
+   return '<button onclick="repeatTx(\''+t.id+'\')">'+
+    (t.type==='in'?'+':'\u2212')+R(t.amount)+' '+esc((t.note||t.cat||'').slice(0,18))+'</button>';
+  }).join('')+'</div></div>';
+}
+
 function saveTx(id){
  var t=D.tx.filter(function(x){return x.id===id;})[0];if(!t)return;
  var amt=Number((document.getElementById('e_amt')||{}).value);
@@ -4514,11 +5103,123 @@ function wipe(){
  D=clone(SEED);save();closeSheet();chrome(false);draw();
 }
 
+/* ================= REMINDERS =================
+   A phone that has fully closed the app cannot be woken by it without a server,
+   so these fire while Momentum is open or recently used, and catch up when it opens. */
+function remOn(){return !!(D.settings.rem&&D.settings.rem.on);}
+function remPerm(){try{return Notification.permission;}catch(e){return 'none';}}
+function askRem(){
+ if(remPerm()==='none')return toast('This browser cannot show notifications.');
+ try{Notification.requestPermission().then(function(p){
+  if(p!=='granted')return toast('Android said no. Allow notifications for this app in phone settings.');
+  D.settings.rem=D.settings.rem||{};
+  D.settings.rem.on=1;
+  ['water','due','log'].forEach(function(k){
+   if(D.settings.rem[k]===undefined)D.settings.rem[k]=1;});
+  save();draw();
+  fire('Reminders are on','Water, money due, and a nudge if the day is still blank.');
+ }).catch(function(){toast('Could not ask for permission.');});}catch(e){toast('Could not ask.');}
+}
+function remToggle(k){D.settings.rem=D.settings.rem||{};
+ D.settings.rem[k]=D.settings.rem[k]?0:1;save();draw();}
+function remRow(k,label){
+ var on=!!(D.settings.rem&&D.settings.rem[k]);
+ return '<button class="go ghost" style="text-align:left;display:flex;'+
+  'justify-content:space-between;align-items:center" onclick="remToggle(\''+k+'\')">'+
+  '<span>'+label+'</span><span style="font-weight:700;color:'+
+  (on?'var(--g2)':'var(--mut)')+'">'+(on?'on':'off')+'</span></button>';
+}
+function fire(title,body,tag){
+ try{
+  var opt={body:body,icon:'icon-192.png',badge:'icon-192.png',
+   tag:tag||'momentum',vibrate:[120,60,120]};
+  if(navigator.serviceWorker&&navigator.serviceWorker.ready)
+   navigator.serviceWorker.ready.then(function(r){r.showNotification(title,opt);})
+    .catch(function(){try{new Notification(title,opt);}catch(e){}});
+  else new Notification(title,opt);
+ }catch(e){}
+}
+function remDone(k){return (D.settings.remLog||{})[k]===today();}
+function remStamp(k){
+ D.settings.remLog=D.settings.remLog||{};
+ var L=D.settings.remLog,ks=Object.keys(L);
+ if(ks.length>180)ks.slice(0,ks.length-120).forEach(function(x){delete L[x];});
+ L[k]=today();save();
+}
+function remCheck(){
+ if(!remOn()||remPerm()!=='granted')return;
+ var r=D.settings.rem||{},h=new Date().getHours(),t=today();
+ if(r.water&&[11,15,19,21].indexOf(h)>=0&&!remDone('water'+h)){
+  var now=waterOf(t),tg=D.health.water||3000;
+  if(now<tg){remStamp('water'+h);
+   fire('Water',now?(now/1000).toFixed(1)+' of '+(tg/1000).toFixed(1)+' litres so far.'
+    :'Nothing yet today. Target '+(tg/1000).toFixed(1)+' litres.','water');}
+ }
+ if(r.due&&h>=9){
+  var dd=new Date().getDate();
+  dues().forEach(function(x){
+   if(isPaid(x.id))return;
+   var gap=x.day-dd;
+   if(gap<0||gap>2)return;
+   var k='due'+x.id+'g'+gap;
+   if(remDone(k))return;remStamp(k);
+   fire(x.name+' '+R(x.amount),
+    gap===0?'Due today.':gap===1?'Due tomorrow.':'Due in two days.','due'+x.id);
+  });
+ }
+ if(r.log&&h>=21&&!remDone('log')){
+  var noFood=!foodOf(t).length;
+  var noMoney=!D.tx.filter(function(x){return x.date===t;}).length;
+  if(noFood||noMoney){remStamp('log');
+   fire('Log your day',noFood&&noMoney?'Nothing written down today, food or money.'
+    :noFood?'No food logged today.':'No money logged today.','log');}
+ }
+}
+setInterval(remCheck,60000);
+setTimeout(remCheck,4000);
+document.addEventListener('visibilitychange',function(){if(!document.hidden)remCheck();});
+
+/* Petrol that was counted twice, cleared only when you say so. */
+function dropFuelDupes(){
+ var fd=fuelDupes();if(!fd.length)return toast('Nothing double-counted.');
+ if(!confirm('Remove '+fd.length+' double-counted petrol '+
+  (fd.length===1?'entry':'entries')+'? The fill-ups themselves stay.'))return;
+ mark('removing double-counted petrol');
+ var ids={};fd.forEach(function(t){ids[t.id]=1;});
+ D.tx=D.tx.filter(function(t){return !ids[t.id];});
+ save();draw();toast('Removed '+fd.length+'.');
+}
+
+/* ================= THE BACK BUTTON =================
+   On a phone, Back should walk you out one step at a time: close what is open,
+   then come back to Home, and only then leave the app. */
+var _sheetPushed=0,_skipPop=0,_exitArm=0;
+function pushGuard(){try{history.pushState({mg:1},'');}catch(e){}}
+function sheetOpen(){var s=document.getElementById('sheet');
+ return !!(s&&s.classList.contains('on'));}
+
 function openSheet(html){
  document.getElementById('sbox').innerHTML=html;
  document.getElementById('sheet').classList.add('on');
+ if(!_sheetPushed){_sheetPushed=1;pushGuard();}
 }
-function closeSheet(){document.getElementById('sheet').classList.remove('on');}
+function closeSheet(){
+ var s=document.getElementById('sheet');
+ if(!s||!s.classList.contains('on'))return;
+ s.classList.remove('on');
+ if(_sheetPushed){_sheetPushed=0;_skipPop=1;try{history.back();}catch(e){_skipPop=0;}}
+}
+window.addEventListener('popstate',function(){
+ if(_skipPop){_skipPop=0;return;}
+ var _co=document.getElementById('camo');
+ if(_co&&_co.classList.contains('on')){closeCam();pushGuard();return;}
+ if(sheetOpen()){_sheetPushed=0;
+  var s=document.getElementById('sheet');if(s)s.classList.remove('on');return;}
+ if(TAB!=='home'){TAB='home';paintNav();draw();window.scrollTo({top:0});return;}
+ /* Home, nothing open. One warning, then the next press really does leave. */
+ if(Date.now()-_exitArm>2200){_exitArm=Date.now();toast('Press back again to close Momentum.');}
+});
+pushGuard();
 document.getElementById('sheet').onclick=function(e){if(e.target.id==='sheet')closeSheet();};
 function toastUndo(msg){toast(msg,1);}
 function toast(msg,undoable){
