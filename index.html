@@ -752,6 +752,7 @@ function addDebtSheet(){
 }
 function addDebt(){
  function v(id){return Number((document.getElementById(id)||{}).value)||0;}
+ var was=daysLeft().days, wasDate=freeDate(0);
  var nm=((document.getElementById('n_nm')||{}).value||'').trim();
  if(!nm)return toast('Give the loan a name.');
  var left=v('n_left');
@@ -762,7 +763,8 @@ function addDebt(){
   lender:((document.getElementById('n_len')||{}).value||'').trim(),
   total:tot,left:left,emi:v('n_emi'),rate:v('n_rate'),
   day:Math.min(31,Math.max(1,v('n_day')||1))});
- save();closeSheet();draw();toast(nm+' added.');
+ save();closeSheet();draw();
+ if(salaryNet())costInDays(was,wasDate);else toast(nm+' added.');
 }
 function deleteDebt(id){
  var d=D.debts.filter(function(x){return x.id===id;})[0];if(!d)return;
@@ -2087,6 +2089,7 @@ function finHome(){
            :'Short '+R(-free)+' against '+R(dueLeft())+' still due this month')+'</div></div></div>';
 
  h+=usualChips();
+ h+=freedomLine();
  h+=runwayCard();
 
  h+='<div class="sec"><div class="pair">'+
@@ -2818,10 +2821,524 @@ function gapPage(){
   '</div></div>';
  return h+'<div style="height:16px"></div></div>';
 }
+/* ================= THE DEBT-FREE DATE =================
+   Everything here reads the live tables, so a new loan or a cleared one changes the
+   answer by itself. Nothing is typed in twice. */
+function salaryNet(){var x=Number((D.settings.salary||{}).net);return x>0?x:Number(D.settings.incomeKnown)||0;}
+function salaryDeduct(){return Number((D.settings.salary||{}).deduct)||0;}
+function deductId(){return (D.settings.salary||{}).debtId||'';}
+function inHand(){return Math.max(0,salaryNet()-salaryDeduct());}
+
+function billTotal(){return (D.bills||[]).reduce(function(a,b){return a+(Number(b.amount)||0);},0);}
+/* EMIs he actually pays out of his own pocket. A salary deduction is not one of them. */
+function emiCash(){
+ var skip=deductId();
+ return liveDebts().reduce(function(a,d){
+  return a+((d.id===skip)?0:(Number(d.emi)||0));},0);
+}
+function monthlyGap(){return emiCash()+billTotal()-inHand();}
+
+/* ================= RIDING DAYS LEFT =================
+   Counted, not forecast. Every rupee he logs comes straight off the total, so the
+   number moves the moment he writes something down. The only estimate in it is the
+   divisor, and the sheet shows exactly which of his days produced it. */
+function rideDayList(backDays){
+ var cut=new Date(Date.now()-(backDays||60)*864e5).toISOString().slice(0,10);
+ var earn={},fuel={};
+ D.tx.forEach(function(t){
+  if(t.date<cut)return;
+  if(t.type==='in'&&t.src&&t.src!=='salary')earn[t.date]=(earn[t.date]||0)+t.amount;
+  else if(t.type==='out'&&t.cat==='Fuel')fuel[t.date]=(fuel[t.date]||0)+t.amount;
+ });
+ return Object.keys(earn).sort().map(function(d){
+  return {date:d,gross:earn[d],fuel:fuel[d]||0,net:earn[d]-(fuel[d]||0)};});
+}
+/* The middle day, not the mean. One freak day cannot drag the whole number about.
+   Today is left out of it: the day is not finished, and a half-logged day would
+   drag the figure down and bounce the whole count about. */
+function typicalDay(){
+ var set=Number((D.settings||{}).dayAssume);
+ if(set>0)return Math.round(set);        /* his own figure wins over mine */
+ var t=today();
+ var L=rideDayList().filter(function(x){return x.date!==t;})
+  .slice(-14).map(function(x){return x.net;}).sort(function(a,b){return a-b;});
+ if(!L.length){
+  var any=rideDayList();
+  if(!any.length)return 0;
+  return Math.max(0,any[any.length-1].net);
+ }
+ var m=Math.floor(L.length/2);
+ return Math.round(L.length%2?L[m]:(L[m-1]+L[m])/2);
+}
+function gigThisMonth(){
+ var r=range('month'),n=0;
+ D.tx.forEach(function(t){
+  if(t.date<r[0]||t.date>r[1])return;
+  if(t.type==='in'&&t.src&&t.src!=='salary')n+=t.amount;
+  else if(t.type==='out'&&t.cat==='Fuel')n-=t.amount;
+ });
+ return n;
+}
+function gigOn(day){
+ var n=0;
+ D.tx.forEach(function(t){
+  if(t.date!==day)return;
+  if(t.type==='in'&&t.src&&t.src!=='salary')n+=t.amount;
+  else if(t.type==='out'&&t.cat==='Fuel')n-=t.amount;
+ });
+ return n;
+}
+/* ================= THE WHOLE THING, MONTH BY MONTH =================
+   One simulation, not a formula. It starts with the money actually in his accounts and
+   walks forward: salary in, riding in, bills out, every instalment paid, and whatever is
+   left over thrown at the smallest loan. When a loan closes its instalment simply stops
+   being paid, so the money is there next month for the next one. That cascade is the
+   whole reason the motorcycle does not take three years.
+   Change a debt, add one, earn a day \u2014 it all lands here. */
+function plan(ridePerMonth,startCash){
+ var per=typicalDay();
+ var list=liveDebts().map(function(d){
+  return {id:d.id,name:d.name,left:Number(d.left)||0,emi:Number(d.emi)||0,
+   day:Math.min(28,Math.max(1,Number(d.day)||1))};});
+ var res={months:0,rideDays:0,steps:[],cashOut:null,per:per,
+  ridePerMonth:ridePerMonth,endCash:0,clear:!list.length,days:0,
+  paidOut:0,salaryIn:0,rideIn:0};
+ if(!list.length||!per)return res;
+ var cash=(startCash==null?liquid():startCash);
+ var skip=deductId(),ded=salaryDeduct(),bills=billTotal(),hand=inHand();
+ /* What is already settled this month must not be charged again. His balance is low
+    precisely because he has paid it, and billing him twice invented a crisis. */
+ var paidM=D.paid[ym()]||{};
+ var BUF=1200;
+ var d=0,MAX=3650;
+ var dom0=new Date().getDate();          /* pick up partway through this month */
+ function owing(){return list.reduce(function(a,x){return a+Math.max(0,x.left);},0);}
+ /* Day by day. Whole months hid a nine thousand rupee purchase entirely, because it was
+    worth eight days and the answer was only ever counted in months. */
+ while(owing()>0&&d<MAX){
+  d++;
+  var abs=dom0+d, dom=((abs-1)%30)+1, month=Math.floor((abs-1)/30)+1;
+  var first=(month===1);               /* the rest of this month, already part-paid */
+  if(dom===1&&!first){
+   cash+=hand-bills;res.salaryIn+=hand;res.paidOut+=bills;
+   var md=skip?list.filter(function(x){return x.id===skip;})[0]:null;
+   if(md&&md.left>0){
+    md.left=Math.max(0,md.left-ded);
+    if(md.left<=0)res.steps.push({m:month,name:md.name,freed:ded,why:'deduction ends'});
+   }
+  }
+  if(first&&dom===dom0+1===false){}     /* nothing extra: this month is already settled */
+  if(dom<=ridePerMonth&&owing()>0){cash+=per;res.rideDays++;res.rideIn+=per;}
+  list.forEach(function(x){
+   if(x.id===skip||x.left<=0||x.day!==dom)return;
+   if(first&&paidM[x.id])return;        /* already paid this month */
+   var pay=Math.min(x.left,x.emi);
+   if(pay<=0)return;
+   if(cash>=pay){cash-=pay;x.left-=pay;res.paidOut+=pay;
+    if(x.left<=0)res.steps.push({m:month,name:x.name,freed:x.emi});}
+   else if(res.cashOut==null)res.cashOut=month;
+  });
+  /* spare cash goes at the smallest balance, keeping back what this month still owes */
+  /* Keep back what the rest of this month owes, and the gap the next cycle will open
+     before the salary lands. Sweeping down to nothing is how the simulation invented a
+     shortfall that no one would actually walk into. */
+  var due=list.reduce(function(a,x){
+   if(x.id===skip||x.left<=0||x.day<=dom)return a;
+   if(first&&paidM[x.id])return a;
+   return a+Math.min(x.left,x.emi);},0);
+  var liveEmi=list.reduce(function(a,x){
+   return a+((x.id!==skip&&x.left>0)?Math.min(x.left,x.emi):0);},0);
+  var bridge=Math.max(0,liveEmi+bills-hand);
+  due+=bridge;
+  var spare=cash-BUF-due,guard=0;
+  while(spare>0&&guard++<40){
+   var live=list.filter(function(x){return x.left>0&&x.id!==skip;})
+    .sort(function(p,q){return p.left-q.left;});
+   if(!live.length)break;
+   var pay2=Math.min(live[0].left,spare);
+   if(pay2<=0)break;
+   live[0].left-=pay2;cash-=pay2;spare-=pay2;res.paidOut+=pay2;
+   if(live[0].left<=0)res.steps.push({m:month,name:live[0].name,freed:live[0].emi,early:true});
+  }
+ }
+ res.days=d;res.months=Math.max(1,Math.ceil((dom0+d)/30));res.endCash=Math.round(cash);
+ /* The exact figure riding still has to produce: everything that goes out, less the
+    salary that arrives, less the money already in his accounts. Every rupee he logs
+    comes straight off this, with nothing rounded away. */
+ res.needFromRiding=Math.max(0,Math.round(
+  res.paidOut-res.salaryIn-(startCash==null?liquid():startCash)));
+ var dt=new Date();dt.setDate(dt.getDate()+d);
+ res.date=dt;
+ return res;
+}
+function planDate(p){
+ return p.date?p.date.toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}):'now';
+}
+/* The pace he actually keeps. Counted over a real stretch, never extrapolated from a
+   handful of days, or one good week would have him down as riding every day of the month. */
+function ridePace(){
+ var L=rideDayList(60);
+ if(!L.length)return {days:0,span:0,pace:0,sure:false};
+ var first=L[0].date;
+ var span=Math.max(1,Math.round((Date.now()-new Date(first+'T12:00'))/864e5)+1);
+ var sure=span>=21;
+ var raw=L.length/span*30;
+ /* until there is a proper stretch to judge by, keep the assumption modest */
+ var pace=Math.max(1,Math.min(sure?30:20,Math.round(raw)));
+ return {days:L.length,span:span,pace:pace,sure:sure};
+}
+/* The headline. The simulation already starts from the money he has right now, so
+   today's earnings are in there — subtracting them again would count them twice. */
+function daysLeft(){
+ var per=typicalDay(),rp=ridePace();
+ if(!per||!rp.pace)
+  return {days:0,months:0,per:per,pace:0,ready:false,sure:false};
+ var p=plan(rp.pace);
+ /* days come from the exact rupee figure, not from counting whole months */
+ var days=Math.max(0,Math.ceil(p.needFromRiding/per));
+ return {days:days,need:p.needFromRiding,months:p.months,calDays:p.days,per:per,
+  pace:rp.pace,sure:rp.sure,logged:rp.days,span:rp.span,ready:true,
+  cashOut:p.cashOut,steps:p.steps,date:planDate(p),endCash:p.endCash};
+}
+function minPace(){
+ for(var r=0;r<=30;r++){if(plan(r).cashOut==null)return r;}
+ return 30;
+}
+/* Today, exactly: every source he logged, and the petrol against it. */
+function todayBreakdown(){
+ var t=today(),by={},fuel=0;
+ D.tx.forEach(function(x){
+  if(x.date!==t)return;
+  if(x.type==='in'&&x.src&&x.src!=='salary')by[x.src]=(by[x.src]||0)+x.amount;
+  else if(x.type==='out'&&x.cat==='Fuel')fuel+=x.amount;
+ });
+ var rows=Object.keys(by).map(function(k){
+  return {id:k,name:src(k).name,icon:src(k).icon,amount:by[k]};});
+ var gross=rows.reduce(function(a,r){return a+r.amount;},0);
+ return {rows:rows,gross:gross,fuel:fuel,net:gross-fuel};
+}
+
+/* What today has actually done, measured by running the whole simulation twice: once
+   with today's money and once without it. Not today's rupees divided by an average. */
+function todayMoved(){
+ var t=gigOn(today());
+ if(t<=0)return null;
+ var rp=ridePace();
+ if(!rp.pace||!typicalDay())return {money:t,days:null};
+ var now=plan(rp.pace),without=plan(rp.pace,liquid()-t);
+ return {money:t,days:Math.max(0,without.rideDays-now.rideDays),
+  calDays:Math.max(0,without.days-now.days)};
+}
+/* The rupees still to be earned. This part needs no assumption about any future day. */
+function stillToEarn(){
+ var rp=ridePace();if(!rp.pace)return 0;
+ var p=plan(rp.pace);
+ return Math.max(0,Math.round(p.rideDays*typicalDay()));
+}
+/* His own days, lowest to highest, so he can choose what to assume from real numbers. */
+function dayStats(){
+ var L=rideDayList().filter(function(x){return x.date!==today();})
+  .map(function(x){return x.net;}).sort(function(a,b){return a-b;});
+ if(!L.length)return null;
+ var m=Math.floor(L.length/2);
+ return {n:L.length,low:L[0],high:L[L.length-1],
+  mid:Math.round(L.length%2?L[m]:(L[m-1]+L[m])/2),
+  mean:Math.round(L.reduce(function(a,b){return a+b;},0)/L.length)};
+}
+function setAssume(v){
+ if(v)D.settings.dayAssume=v;else delete D.settings.dayAssume;
+ save();closeSheet();draw();
+ toast(v?('Counting future days at '+R(v)):'Back to your middle day');
+}
+function assumeSheet(){
+ var st=dayStats(),cur=Number(D.settings.dayAssume)||0;
+ if(!st)return toast('Log a few riding days first.');
+ function row(label,val,note){
+  var on=(cur?cur===val:val===st.mid);
+  return '<button class="go ghost" style="text-align:left;display:flex;'+
+   'justify-content:space-between;align-items:center" onclick="setAssume('+
+   (val===st.mid&&!cur?0:val)+')"><span>'+label+'<br>'+
+   '<span style="font-size:11px;color:var(--mut)">'+note+'</span></span>'+
+   '<b style="color:'+(on?'var(--g2)':'var(--mut)')+'">'+R(val)+'</b></button>';
+ }
+ openSheet('<div class="grab"></div><h3>Days you have not ridden yet</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:5px;line-height:1.6">'+
+  'Every day you have already logged is counted at exactly what you earned. This figure is '+
+  'only used for days that have not happened. Pick which of your own days to judge the '+
+  'future by.</div>'+
+  '<div style="margin-top:14px">'+
+  row('Your worst day',st.low,'the most cautious')+
+  row('Your middle day',st.mid,'half your days beat this')+
+  row('Your average day',st.mean,'pulled about by one big day')+
+  row('Your best day',st.high,'only if every day goes perfectly')+
+  '</div>'+
+  '<div class="mic" style="margin-top:17px">Or set your own</div>'+
+  '<input id="as_v" type="number" inputmode="numeric" value="'+(cur||'')+'" placeholder="'+st.mid+'">'+
+  '<button class="go" onclick="setAssume(Number((document.getElementById(\'as_v\')||{}).value)||0)">'+
+  'Use this</button>'+
+  '<div style="font-size:11.5px;color:var(--mut);margin-top:11px;line-height:1.5">'+
+  'From '+st.n+' day'+(st.n===1?'':'s')+' so far, between '+R(st.low)+' and '+R(st.high)+'.</div>'+
+  '<button class="go ghost" onclick="closeSheet()">Close</button>');
+}
+
+/* What a riding day is worth to him, from his own days, net of the petrol he burned. */
+function rideRate(backDays){
+ var cut=new Date(Date.now()-(backDays||45)*864e5).toISOString().slice(0,10);
+ var earn={},fuel={};
+ D.tx.forEach(function(t){
+  if(t.date<cut)return;
+  if(t.type==='in'&&t.src&&t.src!=='salary')earn[t.date]=(earn[t.date]||0)+t.amount;
+  else if(t.type==='out'&&t.cat==='Fuel')fuel[t.date]=(fuel[t.date]||0)+t.amount;
+ });
+ var days=Object.keys(earn);
+ if(!days.length)return {perDay:0,days:0,span:0,net:0};
+ var net=days.reduce(function(a,d){return a+earn[d]-(fuel[d]||0);},0);
+ var first=days.sort()[0];
+ var span=Math.max(1,Math.round((Date.now()-new Date(first+'T12:00'))/864e5)+1);
+ return {perDay:Math.round(net/days.length),days:days.length,span:span,
+  net:net,perMonth:Math.round(net/days.length*days.length/span*30)};
+}
+/* Riding days a month that merely stand still. */
+function breakEvenDays(){
+ var r=rideRate(),g=monthlyGap();
+ if(r.perDay<=0||g<=0)return 0;
+ return Math.ceil(g/r.perDay);
+}
+
+/* Month by month, with each cleared loan's payment rolling onto the next.
+   That cascade is why the motorcycle does not take three years on its own. */
+function freedomSim(extra){
+ var list=liveDebts().map(function(d){
+  return {id:d.id,name:d.name,left:Number(d.left)||0,emi:Number(d.emi)||0};});
+ if(!list.length)return {months:0,date:null,steps:[],clear:true};
+ var skip=deductId(),ded=salaryDeduct(),freed=0,steps=[],m=0;
+ while(list.some(function(d){return d.left>0;})&&m<240){
+  m++;
+  var md=skip?list.filter(function(d){return d.id===skip;})[0]:null;
+  if(md&&md.left>0){
+   md.left=Math.max(0,md.left-ded);
+   if(md.left<=0)steps.push({m:m,name:md.name,freed:0,why:'deduction ends'});
+  }
+  var pool=freed+(Number(extra)||0);
+  list.forEach(function(d){
+   if(d.id===skip||d.left<=0)return;
+   d.left=Math.max(0,d.left-d.emi);
+   if(d.left<=0&&d.emi>0){freed+=d.emi;steps.push({m:m,name:d.name,freed:d.emi});}
+  });
+  /* smallest balance first: it closes soonest and frees its payment soonest */
+  var live=list.filter(function(d){return d.left>0&&d.id!==skip;})
+   .sort(function(a,b){return a.left-b.left;});
+  for(var i=0;i<live.length&&pool>0;i++){
+   var pay=Math.min(live[i].left,pool);
+   live[i].left-=pay;pool-=pay;
+   if(live[i].left<=0&&live[i].emi>0){freed+=live[i].emi;
+    steps.push({m:m,name:live[i].name,freed:live[i].emi,early:true});}
+  }
+ }
+ var dt=new Date();dt.setDate(1);dt.setMonth(dt.getMonth()+m);
+ return {months:m,date:dt,steps:steps,clear:false};
+}
+function freeDate(extra){
+ var f=freedomSim(extra);
+ if(f.clear)return 'now';
+ return f.date.toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+}
+
+/* One line on the home screen. The whole thing in a glance, tappable for the rest. */
+function freedomLine(){
+ var owed=liveDebts().reduce(function(a,d){return a+(Number(d.left)||0);},0);
+ if(!owed||!salaryNet())return '';
+ var dl=daysLeft(),mv=todayMoved(),be=dl.pace||1,done=ridingDaysThisMonth();
+ return '<div class="sec"><div class="card" onclick="go(\'save\')" style="padding:15px 17px">'+
+  '<div style="display:flex;align-items:center;gap:13px">'+
+  '<div style="flex:1">'+
+  '<div class="mic">Riding days to go</div>'+
+  '<div style="font-size:17px;font-weight:800;margin-top:3px">'+
+   (dl.ready?N(dl.days)+' days':'tap to set up')+'</div>'+
+  (dl.ready?'<div style="font-size:11.5px;color:var(--mut);margin-top:4px">'+
+    (mv?'today took off '+mv.days+' \u00B7 ':'')+esc(dl.date)+'</div>':'')+
+  '</div>'+
+  (be?'<div style="width:52px;height:52px;flex:0 0 auto;position:relative">'+
+   ringSvg(Math.min(1,done/be))+'</div>':'')+
+  '</div></div></div>';
+}
+function ridingDaysThisMonth(){
+ var r=range('month'),seen={};
+ D.tx.forEach(function(t){
+  if(t.type==='in'&&t.src&&t.src!=='salary'&&t.date>=r[0]&&t.date<=r[1])seen[t.date]=1;});
+ return Object.keys(seen).length;
+}
+function ringSvg(frac){
+ var c=2*Math.PI*21;
+ return '<svg viewBox="0 0 52 52" style="width:52px;height:52px;transform:rotate(-90deg)">'+
+  '<circle cx="26" cy="26" r="21" fill="none" stroke="var(--line)" stroke-width="6"/>'+
+  '<circle cx="26" cy="26" r="21" fill="none" stroke="'+(frac>=1?'var(--g2)':'var(--amber)')+'" '+
+  'stroke-width="6" stroke-linecap="round" stroke-dasharray="'+c+'" '+
+  'stroke-dashoffset="'+(c*(1-frac))+'"/></svg>';
+}
+
+function freedomCard(){
+ var owed=liveDebts().reduce(function(a,d){return a+(Number(d.left)||0);},0);
+ if(!owed)return '';
+ if(!salaryNet())
+  return '<div class="sec"><div class="card" onclick="salarySheet()" style="border-color:var(--amber)">'+
+   '<div class="mic">Debt-free date</div>'+
+   '<div style="font-size:14px;font-weight:700;margin-top:6px">Tell me your salary first</div>'+
+   '<div style="font-size:12px;color:var(--mut);margin-top:5px;line-height:1.5">'+
+   'What lands in your hand, and anything taken off it. Then this works out the date and what a '+
+   'riding day is worth.</div></div></div>';
+ var dl=daysLeft(),mv=todayMoved(),tb=todayBreakdown();
+ if(!dl.ready)
+  return '<div class="sec"><div class="card" onclick="freedomSheet()">'+
+   '<div class="mic">Riding days to go</div>'+
+   '<div style="font-size:14px;font-weight:700;margin-top:6px">Log a few riding days first</div>'+
+   '<div style="font-size:12px;color:var(--mut);margin-top:5px;line-height:1.5">'+
+   R(owed)+' owed. Once I can see what a day on the bike actually earns you, I can count '+
+   'the days to the end of it.</div></div></div>';
+ return '<div class="sec"><div class="card" onclick="freedomSheet()" '+
+  'style="background:'+(dl.cashOut!=null?'#7C2D26':'var(--g1)')+';color:#fff;border-color:transparent">'+
+  '<div class="mic" style="color:rgba(255,255,255,.6)">Riding days to go</div>'+
+  '<div class="big" style="margin-top:5px">'+N(dl.days)+'</div>'+
+  '<div style="font-size:12.5px;opacity:.86;margin-top:9px;line-height:1.65">'+
+  '<b>'+R(dl.need)+'</b> still to come off the bike, on top of your salary.<br>'+
+  R(owed)+' owed across '+liveDebts().length+' loan'+(liveDebts().length===1?'':'s')+'. '+
+  'At '+dl.pace+' days a month that is <b>'+esc(dl.date)+'</b>.'+
+  (dl.sure?'':' <span style="opacity:.7">(from '+dl.logged+' logged days \u2014 it will settle)</span>')+
+  (dl.cashOut!=null?'<br><b>At this pace you run out of money in month '+dl.cashOut+'.</b> '+
+    'You need '+minPace()+' days a month to cover the instalments.':'')+
+  '</div>'+
+  (tb.gross?'<div style="margin-top:13px;padding:12px 14px;background:rgba(255,255,255,.14);'+
+    'border-radius:12px;font-size:12.5px;line-height:1.6">'+
+    '<b>Today, exactly</b><br>'+
+    tb.rows.map(function(r){return r.icon+' '+esc(r.name)+' '+R(r.amount);}).join('<br>')+
+    (tb.fuel?'<br>\u26FD petrol \u2212'+R(tb.fuel):'')+
+    '<br><b>'+R(tb.net)+' off the '+R(dl.need+tb.net)+
+    (mv&&mv.days?' \u2014 '+mv.days+' day'+(mv.days===1?'':'s')+' gone':'')+'</b></div>'
+   :'<div style="margin-top:13px;padding:11px 13px;background:rgba(255,255,255,.1);'+
+    'border-radius:12px;font-size:12.5px;line-height:1.5;opacity:.85">'+
+    'Nothing logged today yet. Every rupee you log comes straight off the '+R(dl.need)+
+    '.</div>')+
+  '</div></div>';
+}
+
+function freedomSheet(){
+ var dl=daysLeft(),L=rideDayList(),per=typicalDay(),pace=ridePace();
+ if(!dl.ready)
+  return openSheet('<div class="grab"></div><h3>Getting out</h3>'+
+   '<div style="font-size:13px;color:var(--mut);margin-top:6px;line-height:1.6">'+
+   'I need a few riding days logged before I can count anything. Log what you earn and '+
+   'what you spend on petrol for a week, and this fills in.</div>'+
+   '<button class="go ghost" onclick="closeSheet()">Close</button>');
+
+ var here=plan(pace.pace);
+ var opts=[Math.max(1,pace.pace-5),pace.pace,pace.pace+5,pace.pace+10]
+  .filter(function(v,i,a){return v<=31&&a.indexOf(v)===i;});
+ var rows=opts.map(function(r){
+  var p=plan(r);
+  return '<div class="row"><div class="nm"><b>'+r+' days a month</b><i>'+
+   N(p.rideDays)+' riding days'+(r===pace.pace?' \u00B7 your pace now':'')+'</i></div>'+
+   '<div style="margin-left:auto;text-align:right">'+
+   '<b class="'+(p.cashOut!=null?'red':'')+'">'+esc(planDate(p))+'</b>'+
+   (p.cashOut!=null?'<div style="font-size:11px;color:var(--red);margin-top:2px">'+
+     'runs short month '+p.cashOut+'</div>':'')+'</div></div>';}).join('');
+
+ var steps=here.steps.slice(0,8).map(function(st){
+  return '<div class="row"><div class="nm"><b>'+esc(st.name)+'</b><i>month '+st.m+
+   (st.freed?' \u00B7 '+R(st.freed)+' a month freed'+(st.early?', paid off early':''):'')+
+   '</i></div></div>';}).join('');
+
+ openSheet('<div class="grab"></div><h3>Getting out</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px;line-height:1.6">'+
+  'Worked out month by month from everything you have logged \u2014 what is in your accounts '+
+  'now, your salary, what you earn riding, the bills, and every instalment. Each loan that '+
+  'closes frees its payment for the next one.</div>'+
+
+  '<div class="card" style="margin-top:14px">'+
+  '<div class="mic">The sum, exactly</div>'+
+  '<div style="font-size:12.5px;color:var(--mut);line-height:1.85;margin-top:7px">'+
+  'Everything going out before the last loan dies: <b style="color:var(--ink)">'+
+   R(here.paidOut)+'</b><br>'+
+  'Salary arriving over that time: \u2212'+R(here.salaryIn)+'<br>'+
+  'Already in your accounts: \u2212'+R(liquid())+'<br>'+
+  'So riding must find: <b style="color:var(--ink)">'+R(dl.need)+'</b><br>'+
+  'At '+R(per)+' a day: <b style="color:var(--ink)">'+N(dl.days)+' riding days</b>'+
+  '</div></div>'+
+
+  '<div class="card" style="margin-top:12px">'+
+  '<div class="mic">Where it starts</div>'+
+  '<div style="font-size:12.5px;color:var(--mut);line-height:1.85;margin-top:7px">'+
+  'In your accounts today: <b style="color:var(--ink)">'+R(liquid())+'</b><br>'+
+  'Salary in hand: '+R(inHand())+
+   (salaryDeduct()?' (after '+R(salaryDeduct())+' taken off)':'')+'<br>'+
+  'Bills: '+R(billTotal())+' \u00B7 Instalments: '+R(emiCash())+'<br>'+
+  'A riding day earns you: <b style="color:var(--ink)">'+R(per)+'</b> after petrol<br>'+
+  'You have been riding about '+pace.pace+' days a month'+
+   (pace.sure?'':' \u2014 judged from only '+pace.days+' day'+(pace.days===1?'':'s')+
+    ' over '+pace.span+', so treat it as provisional')+
+  '</div></div>'+
+
+  (here.cashOut!=null
+   ?'<div class="ban warn" style="margin-top:13px"><span class="ic">!</span><div>'+
+    '<b>At '+pace.pace+' days a month you run short in month '+here.cashOut+'.</b> '+
+    'You need at least <b>'+minPace()+' days a month</b> to keep every instalment paid.'+
+    '</div></div>'
+   :'<div class="ban plain" style="margin-top:13px"><span class="ic">\u2713</span><div>'+
+    'At this pace every instalment is covered, and you finish with about '+
+    R(here.endCash)+' in hand.</div></div>')+
+
+  '<div class="mic" style="margin-top:17px">How the pace changes it</div>'+
+  '<div class="list">'+rows+'</div>'+
+
+  (steps?'<div class="mic" style="margin-top:17px">What closes, and when</div>'+
+   '<div class="list">'+steps+'</div>':'')+
+
+  '<div class="mic" style="margin-top:17px">The days it counted</div>'+
+  '<div class="list">'+L.slice(-8).reverse().map(function(x){
+   return '<div class="row"><div class="nm"><b>'+dshort(x.date)+'</b><i>'+
+    R(x.gross)+' in'+(x.fuel?', '+R(x.fuel)+' petrol':'')+'</i></div>'+
+    '<b style="margin-left:auto" class="'+(x.net>=per?'grn':'')+'">'+R(x.net)+'</b></div>';
+  }).join('')+'</div>'+
+  (L.length<10?'<div style="font-size:11.5px;color:var(--mut);margin-top:9px;line-height:1.5">'+
+   'Only '+L.length+' day'+(L.length===1?'':'s')+' so far. These dates will move about until '+
+   'there are two or three weeks of them.</div>':'')+
+
+  '<button class="go ghost" onclick="closeSheet();salarySheet()">Change my salary</button>'+
+  '<button class="go ghost" onclick="closeSheet()">Close</button>');
+}
+function salarySheet(){
+ var sal=D.settings.salary||{};
+ openSheet('<div class="grab"></div><h3>Your salary</h3>'+
+  '<div class="mic" style="margin-top:14px">What the salary is, before anything is taken off</div>'+
+  '<input id="sl_net" type="number" inputmode="numeric" value="'+(sal.net||'')+'" placeholder="26000">'+
+  '<div class="mic" style="margin-top:15px">Taken off each month, if any</div>'+
+  '<input id="sl_ded" type="number" inputmode="numeric" value="'+(sal.deduct||'')+'" placeholder="5000">'+
+  '<div class="mic" style="margin-top:15px">Which loan that deduction repays</div>'+
+  '<select id="sl_debt"><option value="">Nothing \u2014 it is just taken</option>'+
+   liveDebts().map(function(d){
+    return '<option value="'+d.id+'"'+(sal.debtId===d.id?' selected':'')+'>'+esc(d.name)+'</option>';
+   }).join('')+'</select>'+
+  '<div class="ban plain" style="margin-top:14px"><span class="ic">\u2139</span><div>'+
+  'Naming the loan matters: the app then knows that money is already repaying it, and stops counting '+
+  'the payment twice. When it clears, your in-hand goes up on its own.</div></div>'+
+  '<button class="go" onclick="saveSalary()">Save</button>'+
+  '<button class="go ghost" onclick="closeSheet()">Cancel</button>');
+}
+function saveSalary(){
+ var n=Number((document.getElementById('sl_net')||{}).value)||0;
+ var d=Number((document.getElementById('sl_ded')||{}).value)||0;
+ var id=((document.getElementById('sl_debt')||{}).value)||'';
+ if(!n)return toast('I need the salary figure.');
+ if(d>n)return toast('The deduction cannot be more than the salary.');
+ D.settings.salary={net:n,deduct:d,debtId:id};
+ save();closeSheet();draw();
+ toast(R(n-d)+' in hand \u2014 debt-free '+freeDate(0));
+}
+
 function savePage(){
- var h='<div class="wrap">'+header('Money you are putting aside');
+ var h='<div class="wrap">'+header('Saving, and getting out');
  var list=pots(),dt=dailyTarget();
  var sgot=list.reduce(function(x,p){return x+savedToday(p);},0);
+ h+=freedomCard();
 
  h+='<div class="sec"><div class="card" style="background:var(--g1);color:#fff;border-color:transparent">'+
   '<div class="mic" style="color:rgba(255,255,255,.6)">Put aside so far</div>'+
@@ -3060,12 +3577,26 @@ function editDebt(id){
 }
 function saveDebt(id){
  var d=D.debts.filter(function(x){return x.id===id;})[0];
+ /* what the count said before the edit, so the change can be shown in days */
+ var was=daysLeft().days, wasDate=freeDate(0);
  d.total=Number(document.getElementById('dt').value)||d.total;
  d.left=Number(document.getElementById('dl').value);
  d.emi=Number(document.getElementById('de').value)||0;
  d.day=Math.min(31,Math.max(1,Number(document.getElementById('dd').value)||d.day));
  if(d.left>d.total)d.total=d.left;
  d.estimate=false;save();closeSheet();draw();
+ costInDays(was,wasDate);
+}
+/* Any change to what he owes is answered in the currency that means something to him. */
+function costInDays(was,wasDate){
+ if(!salaryNet())return;
+ var now=daysLeft().days, nowDate=freeDate(0);
+ var diff=now-was;
+ if(!diff)return toast(nowDate===wasDate?'Saved.':'Saved \u2014 debt-free '+nowDate);
+ toast(diff>0?('Saved \u2014 '+N(diff)+' more riding day'+(diff===1?'':'s')+
+   (nowDate!==wasDate?', now '+nowDate:''))
+  :('Saved \u2014 '+N(-diff)+' day'+(diff===-1?'':'s')+' off'+
+   (nowDate!==wasDate?', now '+nowDate:'')));
 }
 function togglePaid(id,silent){
  var m=ym();D.paid[m]=D.paid[m]||{};
@@ -3655,7 +4186,7 @@ function runActions(list,thumb){
 }
 
 /* ===== self test: turns guesswork into facts ===== */
-var APP_VERSION='2026-11-13n';
+var APP_VERSION='2026-11-14h';
 function diagSheet(){
  openSheet('<div class="grab"></div><h3>Self test</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
@@ -3688,7 +4219,7 @@ function copyDiag(){
 }
 function runDiag(){
  DIAG=[];
- diagLine('App version',APP_VERSION==='2026-11-13n'?'ok':'warn',APP_VERSION);
+ diagLine('App version',APP_VERSION==='2026-11-14h'?'ok':'warn',APP_VERSION);
  var where=location.hostname||'local file';
  diagLine('Running from',blocked()?'no':'ok',
   blocked()?where+' \u2014 inside Claude, outside calls are blocked here':where);
@@ -5068,6 +5599,13 @@ function setupPage(){
    (D.settings.pin?(D.settings.bio?'Fingerprint and PIN are on':'Add fingerprint, or remove the PIN')
     :'Set a PIN')+
   '</button></div></div>';
+ h+='<div class="sec"><div class="sechead"><h2>Salary</h2><span class="more">'+
+  (salaryNet()?R(inHand())+' in hand':'not set')+'</span></div><div class="card">'+
+  '<div style="font-size:12.5px;color:var(--mut);line-height:1.55">What lands in your hand each '+
+  'month, and anything taken off it. The debt-free date is worked out from this.</div>'+
+  '<button class="go ghost" onclick="salarySheet()">'+
+  (salaryNet()?'Change it':'Set my salary')+'</button></div></div>';
+
  h+='<div class="sec"><div class="sechead"><h2>Watch data</h2>'+
   '<span class="more">file</span></div><div class="card">'+
   '<div style="font-size:12.5px;color:var(--mut);line-height:1.55">No watch can talk to this app '+
