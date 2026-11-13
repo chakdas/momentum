@@ -282,7 +282,7 @@ var SEED={
          eat:0,burn:400,steps:8000,autoTarget:true},
  tx:[], paid:{}, hlog:{}, food:{}, act:{}, fuel:[], odo:{}, lent:[],
  dict:{units:{},foods:[],notes:[]},
- settings:{pin:'',bio:'',petrol:107.76,incomeKnown:0,name:'',lang:'auto',heard:'',misses:0,ready:0,rem:{on:0,water:1,due:1,log:1},remLog:{}}, ai:{key:'',model:'',qp:0,tmodel:'',pmodel:'',use:{}}, answered:{}
+ settings:{pin:'',bio:'',petrol:107.76,incomeKnown:0,name:'',lang:'auto',heard:'',misses:0,ready:0,rem:{on:0,water:1,due:1,log:1},remLog:{}}, ai:{key:'',model:'',fast:'',smart:'',avail:null,qp:0,tmodel:'',pmodel:'',use:{}}, answered:{}
 };
 
 var CC={Food:['#C2622F','🍽'],Travel:['#3F7FA6','🛺'],Fuel:['#C98A2B','⛽'],
@@ -1320,7 +1320,15 @@ function stopListening(){
 }
 
 /* ================= AI — optional, the user's own key ================= */
-var AI_TRY=['gemini-2.5-flash-lite','gemini-2.5-flash','gemini-flash-latest','gemini-2.0-flash'];
+/* Google retires models and the app must not care. These are preferences, not promises:
+   whatever the key actually offers wins, and the newest is tried first. */
+var FAST_TRY=['gemini-3.5-flash-lite','gemini-3.1-flash-lite','gemini-flash-lite-latest',
+ 'gemini-2.5-flash-lite','gemini-flash-latest'];
+var SMART_TRY=['gemini-3.5-flash','gemini-3.6-flash','gemini-3-flash-preview',
+ 'gemini-flash-latest','gemini-2.5-flash'];
+var AI_TRY=FAST_TRY.concat(SMART_TRY);
+/* Google says this when a model has been withdrawn from new accounts. */
+function goneErr(m){return /no longer available|not found for api version|is not supported|deprecated/i.test(m||'');}
 var _noThink=0; /* set if a model rejects the no-thinking flag */
 function hasKey(){return !!gKey();}
 function gKey(){return (D.ai.key&&D.ai.key.length>10)?D.ai.key:'';}
@@ -1329,7 +1337,8 @@ function gKey(){return (D.ai.key&&D.ai.key.length>10)?D.ai.key:'';}
    kept for reading a plate, where the extra thought actually shows. */
 var G_TEXT='gemini-2.5-flash-lite', G_SMART='gemini-2.5-flash';
 function modelFor(prov,smart){
- return (smart?D.ai.pmodel:D.ai.tmodel)||(smart?G_SMART:G_TEXT);
+ if(smart)return D.ai.pmodel||D.ai.smart||D.ai.fast||G_SMART;
+ return D.ai.tmodel||D.ai.fast||D.ai.smart||G_TEXT;
 }
 
 /* ================= WHAT THE AI HAS COST =================
@@ -1369,11 +1378,10 @@ var GBASE='https://generativelanguage.googleapis.com/v1beta/';
 
 /* Google renames its models often, so rather than hard-coding one, ask the key which
    models it can actually use and keep the answer. */
+/* Ask the key what it can actually run, once, and keep a fast one and a clever one. */
 function pickModel(cb){
- if(D.ai.model)return cb(D.ai.model,null);
+ if(D.ai.fast&&D.ai.smart)return cb(D.ai.fast,null);
  var first=!D.ai.qp;
- /* model discovery sits inside the same deadline as everything else, and it may not
-    recurse its way past it either */
  var pleft=Math.max(2500,Math.min(9000,
   (window._aiUntil||(Date.now()+AI_DEADLINE))-Date.now()));
  var pac=null,pkill=null;
@@ -1394,14 +1402,21 @@ function pickModel(cb){
    var ok=(j.models||[]).filter(function(m){
      return (m.supportedGenerationMethods||[]).indexOf('generateContent')>-1;})
     .map(function(m){return String(m.name).replace('models/','');})
-    .filter(function(n){return !/embed|aqa|tts|image-gen|imagen|veo|native-audio|live/i.test(n);});
-   var flash=ok.filter(function(n){return /flash/.test(n)&&!/thinking|lite|8b/i.test(n);});
-   var chosen=null,i;
-   for(i=0;i<AI_TRY.length&&!chosen;i++)
-    if(ok.indexOf(AI_TRY[i])>-1)chosen=AI_TRY[i];
-   chosen=chosen||flash[0]||ok[0];
-   if(!chosen)return cb(null,'The key works, but no usable model is enabled on it.');
-   D.ai.model=chosen;save();cb(chosen,null);
+    .filter(function(n){return !/embed|aqa|tts|image-gen|imagen|veo|native-audio|live/i.test(n);})
+    .filter(function(n){return !DEAD[n];});
+   if(!ok.length)return cb(null,'The key works, but no usable model is enabled on it.');
+   function best(list,extra){
+    var i;
+    for(i=0;i<list.length;i++)if(ok.indexOf(list[i])>-1)return list[i];
+    var m=ok.filter(extra);
+    return m.length?m[0]:null;
+   }
+   D.ai.fast=best(FAST_TRY,function(n){return /flash/.test(n)&&/lite/.test(n);})||
+             best(SMART_TRY,function(n){return /flash/.test(n);})||ok[0];
+   D.ai.smart=best(SMART_TRY,function(n){return /flash/.test(n)&&!/lite/.test(n);})||
+              D.ai.fast;
+   D.ai.model=D.ai.fast;D.ai.avail=ok.slice(0,40);
+   save();cb(D.ai.fast,null);
   })
   .catch(function(e){
    if(pkill)clearTimeout(pkill);
@@ -1412,6 +1427,13 @@ function pickModel(cb){
    if(e&&(e.name==='AbortError'||/abort/i.test(e.message||'')))
     return cb(null,'Could not reach Google to see which models your key has. Check your signal.');
    cb(null,netErr(e));});
+}
+/* A model withdrawn under us: forget what we chose and look again. Anything Google has
+   called gone is struck off for this session, so we cannot pick it a second time. */
+var DEAD={};
+function forgetModels(which){
+ if(which)DEAD[which]=1;
+ D.ai.fast='';D.ai.smart='';D.ai.model='';D.ai.avail=null;save();
 }
 function apiErr(status,text){
  var msg='';
@@ -1440,9 +1462,10 @@ function netErr(e){
    try again, and if that model stays jammed move to the next one. */
 function busyErr(m){return /overload|high demand|unavailable|try again later|503/i.test(m||'');}
 function nextModel(){
- var cur=D.ai.model,i=AI_TRY.indexOf(cur);
- var n=AI_TRY[(i<0?0:i+1)];
- if(n&&n!==cur){D.ai.model=n;save();return n;}
+ var pool=(D.ai.avail&&D.ai.avail.length)?D.ai.avail:AI_TRY;
+ var cur=D.ai.model,i=pool.indexOf(cur);
+ var n=pool[(i<0?0:i+1)];
+ if(n&&n!==cur){D.ai.model=n;D.ai.fast=n;save();return n;}
  return null;
 }
 /* ================= ASKING THE AI =================
@@ -1476,7 +1499,7 @@ function geminiStream(parts,onText,onDone){
  window._aiUntil=Date.now()+AI_DEADLINE;
  pickModel(function(model,err){
   if(err)return onDone(null,err);
-  model=D.ai.tmodel||G_TEXT;           /* fastest model: time to first word is what counts */
+  model=modelFor('google',false);      /* fastest model: time to first word is what counts */
   var head={'Content-Type':'application/json'};
   if(!D.ai.qp)head['x-goog-api-key']=D.ai.key;
   var url=GBASE+'models/'+model+':streamGenerateContent?alt=sse'+
@@ -1491,7 +1514,7 @@ function geminiStream(parts,onText,onDone){
   .then(function(r){
    if(!r.ok)return r.text().then(function(t){
     if(r.status===429||r.status===503){var e=new Error(apiErr(r.status,t));e.busy=1;throw e;}
-    if(r.status===404){D.ai.model='';save();}
+    if(r.status===404||goneErr(t)){forgetModels(model);var g=new Error('__gone__');throw g;}
     throw new Error(apiErr(r.status,t));});
    if(!r.body||!r.body.getReader)throw new Error('__nostream__');
    var reader=r.body.getReader(),dec=new TextDecoder(),buf='',all='',shown=0;
@@ -1536,6 +1559,15 @@ function geminiStream(parts,onText,onDone){
   .catch(function(e){
    if(killer)clearTimeout(killer);
    if(_aiStopped)return;
+   if(e&&e.message==='__gone__'){
+    /* Google withdrew the model mid-flight. Strike it off and try the next one. */
+    window._goneN=(window._goneN||0)+1;
+    if(window._goneN<4)
+     return geminiStream(parts,onText,function(j,er){window._goneN=0;onDone(j,er);});
+    window._goneN=0;
+    return onDone(null,'Google has retired the model this app was using and I could not find a '+
+     'replacement on your key. Setup \u2192 Run the self test.');
+   }
    if(e&&e.message==='__nostream__')
     return askAI(parts,{},function(j,er){onDone(j,er);});
    if(e&&(e.name==='AbortError'||/abort/i.test(e.message||'')))
@@ -1572,7 +1604,7 @@ function gemini(parts,cb,attempt,opt){
   }).then(function(r){
    if(killer)clearTimeout(killer);
    return r.text().then(function(t){
-    if(r.status===404){D.ai.model='';save();throw new Error('__model__');}
+    if(r.status===404||goneErr(t)){forgetModels(model);throw new Error('__model__');}
     if(r.status===400&&/thinking|thinkingConfig|thinking_budget/i.test(t)&&!_noThink){
      _noThink=1;throw new Error('__nothink__');}
     if(r.status===503||r.status===429||busyErr(t)){
@@ -3619,7 +3651,7 @@ function runActions(list,thumb){
 }
 
 /* ===== self test: turns guesswork into facts ===== */
-var APP_VERSION='2026-11-13k';
+var APP_VERSION='2026-11-13m';
 function diagSheet(){
  openSheet('<div class="grab"></div><h3>Self test</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
@@ -3652,7 +3684,7 @@ function copyDiag(){
 }
 function runDiag(){
  DIAG=[];
- diagLine('App version',APP_VERSION==='2026-11-13k'?'ok':'warn',APP_VERSION);
+ diagLine('App version',APP_VERSION==='2026-11-13m'?'ok':'warn',APP_VERSION);
  var where=location.hostname||'local file';
  diagLine('Running from',blocked()?'no':'ok',
   blocked()?where+' \u2014 inside Claude, outside calls are blocked here':where);
@@ -4972,7 +5004,8 @@ function setupPage(){
     '<b style="color:var(--ink)">Saved key</b><br><span id="keyview">'+esc(keyMask())+'</span><br>'+
     D.ai.key.length+' characters'+
     (D.ai.key.length<30?' \u2014 <b style="color:var(--red)">too short, the paste was cut</b>':'')+
-    (D.ai.model?'<br>model: '+esc(D.ai.model):'')+
+    (D.ai.fast?'<br>fast: '+esc(D.ai.fast):'')+
+    (D.ai.smart&&D.ai.smart!==D.ai.fast?'<br>clever: '+esc(D.ai.smart):'')+
     ' <span style="text-decoration:underline;color:var(--ink)" onclick="showKey()">show</span></div>':'')+
   '<input type="text" id="aik" autocomplete="off" autocorrect="off" autocapitalize="off" '+
    'spellcheck="false" style="-webkit-text-security:disc;text-security:disc" '+
@@ -5242,7 +5275,7 @@ function saveKey(){
  if(v.length<10)return toast('That does not look like a key.');
  if(v.length<30&&!confirm('That key is only '+v.length+' characters, which is shorter than Google\'s keys '+
   'usually are. It may have been cut off when you copied it. Save it anyway?'))return;
- D.ai.key=v;D.ai.model='';D.ai.qp=0;save();draw();
+ D.ai.key=v;forgetModels();D.ai.qp=0;save();draw();
  toast('Saved — now tap Test it.');
 }
 function testKey(){
@@ -5252,7 +5285,7 @@ function testKey(){
   if(err)return openSheet('<div class="grab"></div><h3>Not working</h3>'+
    '<div class="ban warn" style="margin-top:12px"><span class="ic">!</span><div>'+esc(err)+'</div></div>'+
    '<button class="go ghost" onclick="closeSheet()">Close</button>');
-  toast(j&&j.ok?('Working — using '+D.ai.model):'The key answered, but oddly.');
+  toast(j&&j.ok?('Working \u2014 using '+(D.ai.fast||D.ai.model)):'The key answered, but oddly.');
  });
 }
 function editAccount(id){
