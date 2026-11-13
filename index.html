@@ -278,7 +278,8 @@ var SEED={
  health:{weightStart:75,weightTarget:70,height:170,age:30,water:3000,protein:0,
          eat:0,burn:400,steps:8000,autoTarget:true},
  tx:[], paid:{}, hlog:{}, food:{}, act:{}, fuel:[], odo:{}, lent:[],
- settings:{pin:'',bio:'',petrol:107.76,incomeKnown:0,name:'',lang:'auto',heard:'',misses:0,ready:0,rem:{on:0,water:1,due:1,log:1},remLog:{}}, ai:{key:'',model:'',qp:0}, answered:{}
+ dict:{units:{},foods:[],notes:[]},
+ settings:{pin:'',bio:'',petrol:107.76,incomeKnown:0,name:'',lang:'auto',heard:'',misses:0,ready:0,rem:{on:0,water:1,due:1,log:1},remLog:{}}, ai:{key:'',model:'',qp:0,okey:'',prov:'google',tmodel:'',pmodel:'',use:{}}, answered:{}
 };
 
 var CC={Food:['#C2622F','🍽'],Travel:['#3F7FA6','🛺'],Fuel:['#C98A2B','⛽'],
@@ -422,11 +423,25 @@ var FOODS=[
 ['Water','தண்ணீர்,thanni,thanneer',0,'glass',1,0]
 ];
 var FIDX=[];
-FOODS.forEach(function(f,i){
- var names=[f[0].toLowerCase()].concat(f[1].split(',').map(function(x){return x.trim().toLowerCase();}));
- names.filter(Boolean).forEach(function(n){FIDX.push({n:n,i:i});});
-});
+/* The index is the built-in table plus every food he has taught the app himself.
+   His own entries win, so a correction he made is never overruled by the defaults. */
+function addToIndex(f,mine){
+ var names=[String(f[0]).toLowerCase()]
+  .concat(String(f[1]||'').split(',').map(function(x){return x.trim().toLowerCase();}));
+ names.filter(Boolean).forEach(function(n){FIDX.push({n:n,f:f,mine:!!mine});});
+}
+function rebuildIndex(){
+ FIDX.length=0;
+ FOODS.forEach(function(f){addToIndex(f,false);});
+ try{(D.dict.foods||[]).forEach(function(f){addToIndex(f,true);});}catch(e){}
+ /* longest name first, and his own ahead of a built-in of the same length */
+ FIDX.sort(function(a,b){
+  if(a.n.length!==b.n.length)return b.n.length-a.n.length;
+  return (b.mine?1:0)-(a.mine?1:0);});
+}
+FOODS.forEach(function(f){addToIndex(f,false);});
 FIDX.sort(function(a,b){return b.n.length-a.n.length;});
+/* D is not loaded yet here; rebuildIndex() runs again right after it is. */
 
 var NUMW={one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,half:0.5,
  twenty:20,thirty:30,forty:40,fifty:50,sixty:60,seventy:70,eighty:80,ninety:90,hundred:100,thousand:1000,
@@ -436,9 +451,19 @@ var NUMW={one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,
  'ஆறு':6,'ஏழு':7,'எட்டு':8,'ஒன்பது':9,'பத்து':10,'அரை':0.5,
  'இருபது':20,'முப்பது':30,'நாற்பது':40,'ஐம்பது':50,'அறுபது':60,'எழுபது':70,'எண்பது':80,'தொண்ணூறு':90,
  'நூறு':100,'இருநூறு':200,'முன்னூறு':300,'நானூறு':400,'ஐநூறு':500,'ஆயிரம்':1000};
-var UNITW='cup|cups|glass|glasses|plate|plates|piece|pieces|nos|no|bowl|bowls|spoon|spoons|tsp|tbsp';
+var UNITW='cup|cups|glass|glasses|plate|plates|piece|pieces|nos|no|bowl|bowls|spoon|spoons|tsp|tbsp'+
+ '|mug|mugs|tumbler|tumblers|dabara|davara|katori|packet|packets|pack|packs|slice|slices'+
+ '|bottle|bottles|ml|litre|litres|liter|liters|gram|grams|gm|kg|portion|portions|serving|servings';
+/* Words that mean the same as a unit the table already knows. His own go in D.dict.units. */
+var UNITMAP={mug:'cup',mugs:'cup',tumbler:'cup',tumblers:'cup',dabara:'cup',davara:'cup',
+ katori:'bowl',portion:'plate',portions:'plate',serving:'plate',servings:'plate'};
+function unitAlias(w){
+ try{if(D.dict&&D.dict.units&&D.dict.units[w])return D.dict.units[w];}catch(e){}
+ return UNITMAP[w]||null;
+}
 
 var D=load(), MODE='finance', TAB='home', SUB='spending', SPAN='week', FDAY=null;
+try{rebuildIndex();}catch(e){}
 
 function load(){
  try{var raw=localStorage.getItem(KEY);
@@ -478,6 +503,39 @@ function load(){
   return d;}catch(e){return clone(SEED);}
 }
 function clone(x){return JSON.parse(JSON.stringify(x));}
+
+/* ================= WHAT HE HAS TAUGHT IT =================
+   Every correction is kept on the phone. The same question is never asked twice,
+   and the answer costs nothing and works with no signal. */
+function dict(){D.dict=D.dict||{units:{},foods:[],notes:[]};
+ D.dict.units=D.dict.units||{};D.dict.foods=D.dict.foods||[];
+ D.dict.notes=D.dict.notes||[];return D.dict;}
+function learnUnit(word,base){
+ word=String(word||'').toLowerCase().trim();
+ base=String(base||'').toLowerCase().trim();
+ if(!word||!base)return false;
+ dict().units[word]=base;save();return true;
+}
+/* Arguments in the same order as a row of the food table, so they cannot be swapped:
+   name, aliases, calories, unit, quantity, protein. */
+function learnFood(name,aliases,kcal,unit,qty,pro){
+ name=String(name||'').trim();kcal=Number(kcal);
+ if(!name||!(kcal>0))return false;
+ var d=dict(),low=name.toLowerCase();
+ var row=[name,String(aliases||'').toLowerCase(),Math.round(kcal),
+  unit||'plate',Number(qty)||1,Math.round((Number(pro)||0)*10)/10];
+ var at=-1;
+ d.foods.forEach(function(f,i){if(String(f[0]).toLowerCase()===low)at=i;});
+ if(at>=0)d.foods[at]=row;else d.foods.push(row);
+ save();rebuildIndex();return true;
+}
+function forgetFood(name){
+ var d=dict(),low=String(name||'').toLowerCase();
+ d.foods=d.foods.filter(function(f){return String(f[0]).toLowerCase()!==low;});
+ save();rebuildIndex();
+}
+function dictCount(){var d=dict();
+ return d.foods.length+Object.keys(d.units).length;}
 /* one step of undo for whatever was just done */
 var UNDO=null;
 function mark(label){
@@ -947,6 +1005,15 @@ function actLabel(a){return a.kind==='steps'?N(a.value)+' steps':a.value+' min '
  if(dirty)save();})();
 
 /* ================= PARSING ================= */
+/* "iam drinking a mug of coffee" and "coffee 1 cup" should reach the table the same way. */
+var FILLER=/\b(?:i\s*am|iam|i'm|im|i|we|just|now|today|currently|am|is|was|were|be|been|being|'?s)\b/g;
+var VERBS=/\b(?:drink|drinking|drank|eat|eating|ate|eaten|have|having|had|take|taking|took|finish|finished|consume|consumed|want|wanted)\b/g;
+function deFiller(t){
+ return String(t||'')
+  .replace(FILLER,' ').replace(VERBS,' ')
+  .replace(/\b(?:a|an|the|of|some|my|one\s+more)\b/g,' ')
+  .replace(/\s+/g,' ').trim();
+}
 function clean(t){
  return String(t||'').toLowerCase().replace(/[!?;:]/g,' ')
   .replace(/[.,]/g,function(m,off,s){
@@ -967,8 +1034,25 @@ function numBefore(txt,at){
   return NUMW[ws[ws.length-2]];
  return null;
 }
+/* "coffee 2" and "kothu parotta 2 plate" are how people actually write it, so the
+   number after the dish counts too — but only when none came before it, and only when
+   the next dish is not the one it really belongs to ("sambar rice 3 muuta" is 3 eggs). */
+function numAfter(txt,at){
+ var post=txt.slice(at,at+22);
+ var m=post.match(new RegExp('^\\s*([\\d]+(?:\\.\\d+)?)\\s*(?:'+UNITW+')?\\b'));
+ if(m)return {n:Number(m[1]),end:at+m[0].length};
+ var lead=post.match(/^\s*/)[0].length;
+ var ws=post.trim().split(' ');
+ if(ws[0]&&NUMW[ws[0]]!==undefined)
+  return {n:NUMW[ws[0]],end:at+lead+ws[0].length};
+ return null;
+}
 function parseFoodText(text){
- var t=clean(text),found=[],used=[];
+ var t=clean(text);
+ /* swap his words for ones the table knows, then drop the talk around them */
+ t=t.replace(/[a-z\u0b80-\u0bff]+/g,function(w){return unitAlias(w)||w;});
+ t=deFiller(t);
+ var found=[],used=[];
  FIDX.forEach(function(e){
   var at=0;
   while(true){
@@ -981,11 +1065,21 @@ function parseFoodText(text){
    var clash=used.some(function(u){return i<u[1]&&at>u[0];});
    if(clash)continue;
    used.push([i,at]);
-   var f=FOODS[e.i],q=numBefore(t,i);
-   found.push({pos:i,name:f[0],qty:q==null?f[4]:q,unit:f[3],per:f[2],pro:f[5]||0});
+   var f=e.f||FOODS[e.i],q=numBefore(t,i);
+   found.push({pos:i,end:at,name:f[0],qty:q==null?null:q,
+    dflt:f[4],unit:f[3],per:f[2],pro:f[5]||0});
   }
  });
  found.sort(function(a,b){return a.pos-b.pos;});
+ /* a trailing number only counts if the next dish has not already claimed it */
+ found.forEach(function(it,ix){
+  if(it.qty!=null)return;
+  var na=numAfter(t,it.end);
+  var next=found[ix+1];
+  /* if the next dish begins immediately after the number, the number was its own */
+  if(na&&(!next||next.pos>na.end+1))it.qty=na.n;
+  if(it.qty==null)it.qty=it.dflt;
+ });
  /* whatever the table could not account for */
  var rest=t,i2;
  var ranges=used.slice().sort(function(x,y){return y[0]-x[0];});
@@ -1225,7 +1319,53 @@ function stopListening(){
 /* ================= AI — optional, the user's own key ================= */
 var AI_TRY=['gemini-2.5-flash-lite','gemini-2.5-flash','gemini-flash-latest','gemini-2.0-flash'];
 var _noThink=0; /* set if a model rejects the no-thinking flag */
-function hasKey(){return !!(D.ai.key&&D.ai.key.length>10);}
+function hasKey(){return !!(gKey()||oKey());}
+function gKey(){return (D.ai.key&&D.ai.key.length>10)?D.ai.key:'';}
+function oKey(){return (D.ai.okey&&D.ai.okey.length>20)?D.ai.okey:'';}
+/* Which service to ask first. If he has only one key there is nothing to choose. */
+function firstProv(){
+ if(D.ai.prov==='openai'&&oKey())return 'openai';
+ if(D.ai.prov==='google'&&gKey())return 'google';
+ return gKey()?'google':oKey()?'openai':'';
+}
+function otherProv(p){return p==='google'?(oKey()?'openai':''):(gKey()?'google':'');}
+
+/* The cheap model handles plain text; the better one reads plates and runs the chat.
+   Both are his to change in Setup. */
+var G_TEXT='gemini-2.5-flash-lite', G_SMART='gemini-2.5-flash';
+var O_TEXT='gpt-4o-mini',           O_SMART='gpt-4o-mini';
+function modelFor(prov,smart){
+ if(prov==='openai')return (smart?D.ai.pmodel:D.ai.tmodel)||(smart?O_SMART:O_TEXT);
+ return (smart?D.ai.pmodel:D.ai.tmodel)||(smart?G_SMART:G_TEXT);
+}
+
+/* ================= WHAT THE AI HAS COST =================
+   Counted on the phone, so he can decide about paying from his own numbers. */
+function useMonth(){return ym();}
+function useBump(prov,model,inTok,outTok){
+ D.ai.use=D.ai.use||{};
+ var m=D.ai.use[useMonth()]=D.ai.use[useMonth()]||{calls:0,inTok:0,outTok:0};
+ m.calls++;m.inTok+=inTok||0;m.outTok+=outTok||0;
+ save();
+}
+/* Per million tokens, in rupees, at roughly 89 to the dollar. Rough on purpose. */
+var PRICE={'gemini-2.5-flash-lite':[8.9,35.6],'gemini-2.5-flash':[26.7,222],
+ 'gpt-4o-mini':[13.4,53.4]};
+function useCost(m){
+ if(!m)return 0;
+ var p=PRICE[modelFor(firstProv(),false)]||PRICE['gemini-2.5-flash-lite'];
+ return (m.inTok/1e6)*p[0]+(m.outTok/1e6)*p[1];
+}
+function useThisMonth(){return (D.ai.use||{})[useMonth()]||{calls:0,inTok:0,outTok:0};}
+/* A rough token count: about four characters to a token, an image about 600. */
+function tokGuess(parts){
+ var n=0;
+ (parts||[]).forEach(function(p){
+  if(p.text)n+=Math.ceil(p.text.length/4);
+  if(p.inline_data)n+=600;
+ });
+ return n;
+}
 /* Inside Claude's artifact frame the browser blocks every call to an outside service.
    Served from an ordinary web address, or opened as a file, the same call goes through. */
 function blocked(){
@@ -1297,11 +1437,85 @@ function nextModel(){
  if(n&&n!==cur){D.ai.model=n;save();return n;}
  return null;
 }
-function gemini(parts,cb,attempt){
- if(!hasKey())return cb(null,'no-key');
+/* ================= ASKING THE AI =================
+   One door for the whole app. It picks the service, and if that one is jammed it
+   quietly tries the other, so a busy server is not something he has to see. */
+function askAI(parts,opt,cb){
+ opt=opt||{};
+ var first=firstProv();
+ if(!first)return cb(null,'no-key');
+ callProv(first,parts,opt,function(j,err,busy){
+  if(j)return cb(j,null);
+  var alt=busy?otherProv(first):'';
+  if(!alt)return cb(null,err);
+  toast('Switching to the other AI\u2026');
+  callProv(alt,parts,opt,function(j2,err2){
+   if(j2)return cb(j2,null);
+   cb(null,err2||err);
+  });
+ });
+}
+function callProv(prov,parts,opt,cb){
+ if(prov==='openai')return openaiCall(parts,opt,cb);
+ return gemini(parts,function(j,e){
+  cb(j,e,!!(window._lastBusy));
+ },0,opt);
+}
+
+/* OpenAI speaks a different shape, so the same parts are translated on the way out
+   and the answer is unwrapped on the way back. */
+function openaiCall(parts,opt,cb){
+ var key=oKey();
+ if(!key)return cb(null,'no-key',false);
+ var content=[];
+ (parts||[]).forEach(function(p){
+  if(p.text)content.push({type:'text',text:p.text});
+  else if(p.inline_data)content.push({type:'image_url',
+   image_url:{url:'data:'+p.inline_data.mime_type+';base64,'+p.inline_data.data,detail:'low'}});
+ });
+ var model=modelFor('openai',!!opt.smart);
+ var ac=null,killer=null;
+ try{ac=new AbortController();
+  killer=setTimeout(function(){try{ac.abort();}catch(e){}},25000);}catch(e){}
+ fetch('https://api.openai.com/v1/chat/completions',{
+  method:'POST',
+  headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
+  signal:ac?ac.signal:undefined,
+  body:JSON.stringify({model:model,
+   messages:[{role:'user',content:content}],
+   response_format:{type:'json_object'},
+   temperature:0.2,max_tokens:900})
+ }).then(function(r){
+  if(killer)clearTimeout(killer);
+  return r.text().then(function(t){
+   if(r.status===429||r.status===503||r.status>=500){
+    var e2=new Error('OpenAI is busy right now.');e2.busy=true;throw e2;}
+   if(r.status===401)throw new Error('That OpenAI key was refused. Check it in Setup.');
+   if(r.status===400&&/credit|quota|billing/i.test(t))
+    throw new Error('Your OpenAI account has no credit. Top it up at platform.openai.com.');
+   if(!r.ok)throw new Error('OpenAI said no ('+r.status+').');
+   return JSON.parse(t);});
+ }).then(function(j){
+  var u=j.usage||{};
+  useBump('openai',model,u.prompt_tokens||tokGuess(parts),u.completion_tokens||150);
+  var txt=(((j.choices||[])[0]||{}).message||{}).content||'';
+  try{cb(JSON.parse(txt),null,false);}
+  catch(e){cb(null,'The AI replied in a shape the app could not read.',false);}
+ }).catch(function(e){
+  if(killer)clearTimeout(killer);
+  if(e&&(e.name==='AbortError'||/abort/i.test(e.message||'')))
+   return cb(null,'That took too long. Try once more.',true);
+  cb(null,(e&&e.message)||'Could not reach OpenAI.',!!(e&&e.busy));
+ });
+}
+
+function gemini(parts,cb,attempt,opt){
+ opt=opt||{};
+ if(!gKey())return cb(null,'no-key');
  attempt=attempt||0;
  pickModel(function(model,err){
   if(!model)return cb(null,err);
+  if(opt.smart||opt.model)model=opt.model||modelFor('google',true);
   var url=GBASE+'models/'+model+':generateContent'+(D.ai.qp?('?key='+encodeURIComponent(D.ai.key)):'');
   var head={'Content-Type':'application/json'};
   if(!D.ai.qp)head['x-goog-api-key']=D.ai.key;
@@ -1329,6 +1543,9 @@ function gemini(parts,cb,attempt){
     if(!r.ok)throw new Error(apiErr(r.status,t));
     return JSON.parse(t);});
   }).then(function(j){
+   window._lastBusy=false;
+   var um=j.usageMetadata||{};
+   useBump('google',model,um.promptTokenCount||tokGuess(parts),um.candidatesTokenCount||150);
    var c=(j.candidates||[])[0]||{};
    var txt=(((c.content||{}).parts||[{}])[0]||{}).text||'';
    if(!txt&&c.finishReason)throw new Error('The AI stopped early ('+c.finishReason+').');
@@ -1336,17 +1553,18 @@ function gemini(parts,cb,attempt){
    catch(e){cb(null,'The AI replied in a shape the app could not read.');}
   }).catch(function(e){
    if(killer)clearTimeout(killer);
-   if(e&&e.message==='__model__')return gemini(parts,cb,attempt);
-   if(e&&e.message==='__nothink__')return gemini(parts,cb,attempt);
+   if(e&&e.message==='__model__')return gemini(parts,cb,attempt,opt);
+   if(e&&e.message==='__nothink__')return gemini(parts,cb,attempt,opt);
    if(e&&(e.name==='AbortError'||/abort/i.test(e.message||'')))
     return cb(null,'That took too long \u2014 the network or Google is slow. Try once more.');
-   if(e&&e.busy&&attempt<4){
-    /* first two: wait and ask the same model again. then: switch models. */
+   if(e&&e.busy&&attempt<(otherProv('google')?1:4)){
+    /* with a second service available, fail over fast instead of waiting it out */
     if(attempt>=2)nextModel();
     var wait=[900,2200,700,2500][attempt]||2000;
-    if(attempt===0)toast('Google is busy \u2014 trying again\u2026');
-    return setTimeout(function(){gemini(parts,cb,attempt+1);},wait);
+    if(attempt===0&&!otherProv('google'))toast('Google is busy \u2014 trying again\u2026');
+    return setTimeout(function(){gemini(parts,cb,attempt+1,opt);},wait);
    }
+   window._lastBusy=!!(e&&e.busy);
    cb(null,e&&e.busy
     ?'Google\'s free servers are overloaded right now. It is not your key and not the app \u2014 '+
      'wait a few minutes and try again.'
@@ -1357,7 +1575,7 @@ function gemini(parts,cb,attempt){
 function aiText(text,mealHint){
  if(!hasKey()){toast('Did not understand that. Add your AI key in Setup for free wording.');return;}
  toast('Reading that…');
- gemini([{text:
+ askAI([{text:
   'You read a short note from an Indian user, written in Tamil, English or both. Decide what it records and '+
   'return ONLY JSON.\n'+
   'Money spent: {"kind":"spend","amount":N,"category":"Food|Travel|Fuel|Groceries|Bills|Health|Shopping|Fun|Family|Other","note":"..."}\n'+
@@ -1372,7 +1590,7 @@ function aiText(text,mealHint){
   'Tamil written in English letters is common (muuta/muttai = egg, saadam = rice, kuzhambu = gravy, '+
   'poriyal = dry vegetable, varuval = fry).'+
   (mealHint?' Treat it as the '+mealHint+' meal unless the note says otherwise.':'')+
-  '\n\nNote: '+text}],
+  '\n\nNote: '+text}],{},
   function(j,err){
    if(err||!j)return toast(err==='no-key'?'Add your AI key in Setup.':err);
    _mealHint=mealHint||null;
@@ -1468,14 +1686,14 @@ function photoFlow(full,thumb){
   var sec=Math.round((Date.now()-_t0)/1000);
   if(sec>=2)e.textContent=sec+'s';
  },400);
- gemini([
+ askAI([
   {text:'Estimate calories from this meal photo. South Indian home or hotel food. Be fast and realistic, '+
    'not generous. Count idli/dosa/chapati; cups for rice; ml for drinks. '+
    'Return ONLY JSON: '+
    '{"items":[{"name":"...","qty":N,"unit":"...","kcal":N,"protein_g":N}],"total":N,"confidence":"high|medium|low","note":"one short line"}. '+
    'Be realistic, not generous. If the photo is not food return {"items":[],"total":0,"confidence":"low","note":"not food"}.'},
   {inline_data:{mime_type:'image/jpeg',data:full.split(',')[1]}}
- ],function(j,err){
+ ],{smart:true},function(j,err){
   clearInterval(_tick);
   var el=document.getElementById('pst');
   if(err||!j){if(el)el.innerHTML='<span style="color:var(--red)">'+esc(err||'No answer')+'</span>'+
@@ -1668,7 +1886,18 @@ function qAct(){
  var i=document.getElementById('qq');
  if(i&&i.value.trim())runQuick();else listen();
 }
-function maybeChat(){}
+/* Tapping the entry bar is how he opens the assistant. The bar itself still works
+   for a quick one-liner, so nothing is taken away. */
+function maybeChat(){
+ if(!hasKey())return;
+ if(TAB==='chat')return;
+ var el=document.getElementById('qq');
+ var carry=((el&&el.value)||'').trim();
+ if(el)el.blur();
+ go('chat');
+ if(carry)setTimeout(function(){chatSend(carry);},120);
+ else setTimeout(function(){var i=document.getElementById('chatin');if(i)i.focus();},200);
+}
 function setLang(l){D.settings.lang=l;save();draw();}
 function shoot(){pendingMeal=mealNow();openCam();}
 
@@ -1687,9 +1916,11 @@ function camStyle(){
   'display:flex;align-items:center;justify-content:space-between;'+
   'background:linear-gradient(to top,rgba(0,0,0,.75),rgba(0,0,0,0))}'+
   '#cambar button{background:none;border:0;color:#fff;font:600 15px/1 inherit;padding:12px;cursor:pointer}'+
-  '#camshot{width:70px;height:70px;border-radius:50%;background:#fff;border:4px solid rgba(255,255,255,.45);'+
-  'padding:0;flex:0 0 auto}'+
-  '#camshot:active{transform:scale(.93)}'+
+  /* this one has to out-rank the rule above, so it is written the same depth */
+  '#cambar button#camshot{width:74px;height:74px;border-radius:50%;background:#fff;'+
+  'border:5px solid rgba(255,255,255,.5);padding:0;flex:0 0 auto;'+
+  'box-shadow:0 2px 18px rgba(0,0,0,.45)}'+
+  '#cambar button#camshot:active{transform:scale(.92);background:#e9e9e9}'+
   '#camhint{position:absolute;left:0;right:0;top:calc(18px + env(safe-area-inset-top));text-align:center;'+
   'color:#fff;font-size:13px;font-weight:600;text-shadow:0 1px 6px rgba(0,0,0,.6)}';
  document.head.appendChild(st);
@@ -1701,7 +1932,7 @@ function openCam(){
  if(!o){
   o=document.createElement('div');o.id='camo';
   o.innerHTML='<video id="camv" playsinline autoplay muted></video>'+
-   '<div id="camhint">Hold the whole plate in frame</div>'+
+   '<div id="camhint">Fit the plate in the picture, then tap the circle</div>'+
    '<div id="cambar"><button type="button" id="camx">Cancel</button>'+
    '<button type="button" id="camshot"></button>'+
    '<button type="button" id="camg">Gallery</button></div>';
@@ -3055,6 +3286,14 @@ function ctxBlock(){
  if(n7)L.push('last 7 days averaged '+Math.round(l7/n7)+' kcal and '+Math.round(l7p/n7)+'g protein over '+n7+' logged days.');
  var fav=favFoods(6);
  if(fav.length)L.push('usual foods: '+fav.map(function(f){return f.name;}).join(', ')+'.');
+ var dd=dict();
+ if(dd.foods.length||Object.keys(dd.units).length){
+  L.push('--- ALREADY LEARNED (do not teach again) ---');
+  if(dd.foods.length)L.push('foods: '+dd.foods.map(function(f){
+   return f[0]+' '+f[2]+'kcal/'+f[3];}).join('; '));
+  if(Object.keys(dd.units).length)L.push('words: '+Object.keys(dd.units).map(function(k){
+   return k+'='+dd.units[k];}).join('; '));
+ }
  return L.join('\n');
 }
 
@@ -3079,7 +3318,14 @@ var CHAT_RULES =
  '{"a":"fuel","km":0,"rupees":0}  (a petrol fill-up with the odometer reading)\n'+
  '{"a":"odo","when":"start|end","km":0}  (odometer at the start or end of a day of riding)\n'+
  '{"a":"lend","who":"","amount":0}  {"a":"lentback","who":""}\n'+
+ '{"a":"learnfood","name":"","aliases":"","kcal":0,"unit":"plate","qty":1,"protein_g":0}\n'+
+ '{"a":"learnunit","word":"","same_as":"cup|glass|plate|bowl|piece|packet"}\n'+
  'Use the real ids from the context when changing or removing something.\n'+
+ 'TEACHING THE APP. The app has its own food table that works offline and instantly. When he uses a '+
+ 'dish or a word it does not know, and he has told you or confirmed what it is, add a "learnfood" or '+
+ '"learnunit" action ALONGSIDE the normal one. Then the app never needs you for that word again. '+
+ 'Only teach it what he has actually confirmed, never a guess he has not seen. Do not re-teach anything '+
+ 'listed as already learned in the context.\n'+
  'If a quantity or portion genuinely changes the number and you cannot tell, put NO action in "do", '+
  'ask the one question in "say", and put two to four tappable answers in "ask". Otherwise leave "ask" empty '+
  'and make a sensible estimate rather than interrogating him.\n'+
@@ -3163,7 +3409,7 @@ function chatSend(preset){
   '\n\n=== HE SAYS ===\n'+(t||'(just the photo)')}];
  if(photo)parts.push({inline_data:{mime_type:'image/jpeg',data:photo.full.split(',')[1]}});
 
- gemini(parts,function(j,err){
+ askAI(parts,{smart:true},function(j,err){
   CHAT_BUSY=false;
   if(err||!j){
    CHAT.push({role:'bot',text:err==='no-key'?'Add your AI key in Setup first.':err});
@@ -3194,6 +3440,15 @@ function runActions(list,thumb){
     out.push('\u2713 '+a.items.map(function(it){
      return ((Number(it.qty)||1)!==1?(Number(it.qty)||1)+' ':'')+String(it.name||'').toLowerCase();
     }).join(', ')+' \u2014 '+Math.round(k)+' kcal, '+Math.round(p)+'g into '+meal);
+   }
+   else if(a.a==='learnfood'&&a.name&&a.kcal){
+    if(learnFood(a.name,a.aliases||'',a.kcal,a.unit||'plate',a.qty||1,a.protein_g||0))
+     out.push('\u2713 learned '+String(a.name).toLowerCase()+
+      ' \u2014 '+Math.round(a.kcal)+' kcal a '+(a.unit||'plate')+', no need to ask again');
+   }
+   else if(a.a==='learnunit'&&a.word&&a.same_as){
+    if(learnUnit(a.word,a.same_as))
+     out.push('\u2713 learned "'+String(a.word).toLowerCase()+'" means a '+a.same_as);
    }
    else if(a.a==='spend'&&a.amount){
     D.tx.push({id:nid(),date:d,amount:Number(a.amount),type:'out',
@@ -3277,7 +3532,7 @@ function runActions(list,thumb){
 }
 
 /* ===== self test: turns guesswork into facts ===== */
-var APP_VERSION='2026-11-13e';
+var APP_VERSION='2026-11-13g';
 function diagSheet(){
  openSheet('<div class="grab"></div><h3>Self test</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
@@ -3310,7 +3565,7 @@ function copyDiag(){
 }
 function runDiag(){
  DIAG=[];
- diagLine('App version',APP_VERSION==='2026-11-13e'?'ok':'warn',APP_VERSION);
+ diagLine('App version',APP_VERSION==='2026-11-13g'?'ok':'warn',APP_VERSION);
  var where=location.hostname||'local file';
  diagLine('Running from',blocked()?'no':'ok',
   blocked()?where+' \u2014 inside Claude, outside calls are blocked here':where);
@@ -4617,30 +4872,72 @@ function setupPage(){
    return '<button class="chip'+(D.settings.lang===x[0]?' on':'')+'" onclick="setLang(\''+x[0]+'\')">'+
     x[1]+'</button>';}).join('')+'</div></div></div>';
 
- h+='<div class="sec"><div class="sechead"><h2>AI key</h2><span class="more">'+
-  (hasKey()?'added':'not set')+'</span></div><div class="card">'+
+ h+='<div class="sec"><div class="sechead"><h2>AI keys</h2><span class="more">'+
+  (gKey()&&oKey()?'both added':gKey()?'Google':oKey()?'OpenAI':'not set')+'</span></div><div class="card">'+
   (blocked()?'<div class="ban amber" style="margin-top:0"><span class="ic">!</span><div>'+
    '<b>The photo reader cannot work here.</b> While the app runs inside Claude, the browser blocks it from '+
-   'calling Google \u2014 nothing to do with your key. Put the app on its own web address and it works. '+
-   'Everything else on this page is unaffected.</div></div>':'')+
-  '<div style="font-size:12.5px;color:var(--mut);line-height:1.5">Needed for two things only: reading calories '+
-  'from a plate photo, and understanding wording the app cannot match on its own. Get a free key at '+
-  '<b>aistudio.google.com</b> → Get API key, then paste it here. It is saved in this browser alone — '+
-  'never type it into a chat or send it to anyone.</div>'+
-  (hasKey()?'<div style="margin-top:13px;padding:11px 13px;background:#FAFAF6;border:1px solid var(--line);'+
-    'border-radius:12px;font-size:12px;color:var(--mut);line-height:1.6">'+
-    '<b style="color:var(--ink)">Saved key</b><br><span id="keyview">'+esc(keyMask())+'</span><br>'+
+   'calling out \u2014 nothing to do with your key. On its own web address it works.</div></div>':'')+
+  '<div style="font-size:12.5px;color:var(--mut);line-height:1.5">Add one or both. With both, if one '+
+  'service is busy the app quietly uses the other, and you never see an outage. Keys are saved in this '+
+  'browser alone \u2014 never type one into a chat or send it to anyone.</div>'+
+
+  '<div class="mic" style="margin-top:17px">Google \u00B7 aistudio.google.com</div>'+
+  (gKey()?'<div style="font-size:11.5px;color:var(--mut);margin-top:5px">'+esc(keyMask())+' \u00B7 '+
     D.ai.key.length+' characters'+
-    (D.ai.key.length<30?' — <b style="color:var(--red)">that looks too short, the paste was probably cut</b>':'')+
-    (D.ai.model?'<br>model: '+esc(D.ai.model):'')+
+    (D.ai.key.length<30?' <b style="color:var(--red)">\u2014 too short, the paste was cut</b>':'')+
     ' <span style="text-decoration:underline;color:var(--ink)" onclick="showKey()">show</span></div>':'')+
   '<input type="text" id="aik" autocomplete="off" autocorrect="off" autocapitalize="off" '+
    'spellcheck="false" style="-webkit-text-security:disc;text-security:disc" '+
-   'placeholder="'+(hasKey()?'Paste a new key to replace it':'Paste your key')+'">'+
-  '<button class="go" onclick="saveKey()">Save key</button>'+
-  (hasKey()?'<button class="go ghost" onclick="testKey()">Test it</button>'+
-   '<button class="go red" onclick="D.ai.key=\'\';save();draw();toast(\'Key removed\')">Remove key</button>':'')+
+   'placeholder="'+(gKey()?'Paste a new Google key to replace it':'Paste your Google key')+'">'+
+  '<button class="go ghost" onclick="saveKey()">Save Google key</button>'+
+
+  '<div class="mic" style="margin-top:20px">OpenAI \u00B7 platform.openai.com</div>'+
+  '<div style="font-size:11.5px;color:var(--mut);margin-top:5px;line-height:1.5">'+
+  (oKey()?esc(okeyMask())+' \u00B7 '+D.ai.okey.length+' characters'
+   :'Your ChatGPT subscription does <b>not</b> work here. The API is billed separately, '+
+    'minimum about $5 of credit.')+'</div>'+
+  '<input type="text" id="aok" autocomplete="off" autocorrect="off" autocapitalize="off" '+
+   'spellcheck="false" style="-webkit-text-security:disc;text-security:disc" '+
+   'placeholder="'+(oKey()?'Paste a new OpenAI key to replace it':'Paste your OpenAI key (sk-...)')+'">'+
+  '<button class="go ghost" onclick="saveOKey()">Save OpenAI key</button>'+
+
+  (gKey()&&oKey()?'<div class="mic" style="margin-top:20px">Ask this one first</div>'+
+   '<div class="chips">'+
+   '<button class="'+(firstProv()==='google'?'on':'')+'" onclick="D.ai.prov=\'google\';save();draw()">Google</button>'+
+   '<button class="'+(firstProv()==='openai'?'on':'')+'" onclick="D.ai.prov=\'openai\';save();draw()">OpenAI</button>'+
+   '</div>':'')+
+
+  (hasKey()?'<button class="go" onclick="testKey()">Test it</button>':'')+
+  (gKey()?'<button class="go red" onclick="D.ai.key=\'\';save();draw();toast(\'Google key removed\')">'+
+   'Remove Google key</button>':'')+
+  (oKey()?'<button class="go red" onclick="D.ai.okey=\'\';save();draw();toast(\'OpenAI key removed\')">'+
+   'Remove OpenAI key</button>':'')+
   '</div></div>';
+
+ /* ---- which model, and what it has cost ---- */
+ if(hasKey()){
+  var um=useThisMonth(),uc=useCost(um);
+  h+='<div class="sec"><div class="sechead"><h2>Cost this month</h2>'+
+   '<span class="more">'+um.calls+' call'+(um.calls===1?'':'s')+'</span></div><div class="card">'+
+   '<div class="big" style="margin-top:0">'+(uc<1?'\u20B9'+uc.toFixed(2):R(Math.round(uc)))+'</div>'+
+   '<div style="font-size:12.5px;color:var(--mut);line-height:1.6;margin-top:8px">'+
+   'An estimate from your own usage, at paid-tier rates. On the free tier you pay nothing and '+
+   'this is just a gauge of how hard you lean on it.'+
+   (dictCount()?'<br>'+dictCount()+' word'+(dictCount()===1?'':'s')+
+     ' learned so far \u2014 each one is a question it never has to ask again.':'')+
+   '</div>'+
+   '<div class="mic" style="margin-top:18px">Photos and chat use</div>'+
+   '<div class="chips">'+
+    '<button class="'+(!D.ai.pmodel?'on':'')+'" onclick="D.ai.pmodel=\'\';save();draw()">'+
+     'Better \u00B7 costs more</button>'+
+    '<button class="'+(D.ai.pmodel?'on':'')+'" onclick="D.ai.pmodel=\''+G_TEXT+'\';save();draw()">'+
+     'Cheapest</button>'+
+   '</div>'+
+   '<div style="font-size:11.5px;color:var(--mut);margin-top:9px;line-height:1.5">'+
+   'Plain entries like "petrol 300" always use the cheapest model \u2014 there is nothing to think about.'+
+   '</div></div></div>';
+ }
+
  h+='<div class="sec"><div class="sechead"><h2>Is it working?</h2>'+
   '<span class="more">'+APP_VERSION+'</span></div><div class="card">'+
   '<div style="font-size:12.5px;color:var(--mut);line-height:1.5">Tests the key, the AI, the camera, '+
@@ -4655,6 +4952,14 @@ function setupPage(){
    (D.settings.pin?(D.settings.bio?'Fingerprint and PIN are on':'Add fingerprint, or remove the PIN')
     :'Set a PIN')+
   '</button></div></div>';
+ h+='<div class="sec"><div class="sechead"><h2>Watch data</h2>'+
+  '<span class="more">file</span></div><div class="card">'+
+  '<div style="font-size:12.5px;color:var(--mut);line-height:1.55">No watch can talk to this app '+
+  'directly \u2014 Android does not allow it. But every watch app can export a file. Export from Zepp, '+
+  'Noise or whichever app your watch uses, then load it here and it fills in steps, weight and sleep.'+
+  '</div>'+
+  '<button class="go ghost" onclick="csvPick()">Load a file from my watch</button></div></div>';
+
  h+='<div class="sec"><div class="sechead"><h2>Space</h2><span class="more" id="stfill">\u2026</span>'+
   '</div><div class="card">'+
   '<div style="height:8px;border-radius:5px;background:var(--line);overflow:hidden">'+
@@ -4737,6 +5042,124 @@ function paintStorage(){
    :'<br>A couple more weeks of logging and I can tell you how long this lasts.')+
   (s.pct>70?'<br><b>Worth taking a backup and telling me \u2014 I will move the store.</b>':'');
 }
+function okeyMask(){
+ var k=D.ai.okey||'';
+ if(k.length<14)return k;
+ return k.slice(0,7)+'\u2026'+k.slice(-4);
+}
+function saveOKey(){
+ var el=document.getElementById('aok');
+ var v=((el||{}).value||'').trim();
+ if(!v)return toast('Nothing pasted.');
+ if(v.length<20)return toast('That looks cut short \u2014 use the copy button, not drag-select.');
+ if(v.indexOf(' ')>=0)return toast('That has a space in it. Copy it again.');
+ D.ai.okey=v;save();draw();
+ toast('OpenAI key saved \u2014 tap Test it.');
+}
+/* ================= BRINGING IN WATCH DATA =================
+   No watch can talk to a web app, but every watch app can export a file.
+   This reads one and fills in the days, forgivingly, and shows him before it writes. */
+var CSVROWS=null;
+function csvPick(){
+ var i=document.createElement('input');
+ i.type='file';i.accept='.csv,text/csv,text/plain';
+ i.onchange=function(e){
+  var f=e.target.files&&e.target.files[0];if(!f)return;
+  var r=new FileReader();
+  r.onload=function(){csvParse(String(r.result||''));};
+  r.onerror=function(){toast('Could not read that file.');};
+  r.readAsText(f);
+ };
+ i.click();
+}
+function csvSplit(line){
+ var out=[],cur='',q=false,i;
+ for(i=0;i<line.length;i++){
+  var c=line.charAt(i);
+  if(c==='"'){ if(q&&line.charAt(i+1)==='"'){cur+='"';i++;} else q=!q; }
+  else if((c===','||c===';'||c==='\t')&&!q){out.push(cur);cur='';}
+  else cur+=c;
+ }
+ out.push(cur);
+ return out.map(function(x){return x.trim();});
+}
+function csvDate(v){
+ v=String(v||'').trim();
+ var m=v.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+ if(m)return m[1]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[3]).slice(-2);
+ m=v.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);     /* day first, as India writes it */
+ if(m)return m[3]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[1]).slice(-2);
+ var d=new Date(v);
+ if(!isNaN(d))return d.toISOString().slice(0,10);
+ return null;
+}
+function csvParse(text){
+ var lines=text.split(/\r?\n/).filter(function(l){return l.trim();});
+ if(lines.length<2)return toast('That file has nothing in it.');
+ var head=csvSplit(lines[0]).map(function(x){return x.toLowerCase();});
+ function col(){
+  var want=Array.prototype.slice.call(arguments),at=-1;
+  head.forEach(function(h,i){
+   want.forEach(function(w){if(at<0&&h.indexOf(w)>=0)at=i;});});
+  return at;
+ }
+ var cD=col('date','day','time'),cS=col('step'),cW=col('weight','kg'),
+     cK=col('calorie','kcal','energy'),cL=col('sleep');
+ if(cD<0)return toast('I cannot find a date column in that file.');
+ if(cS<0&&cW<0&&cK<0&&cL<0)
+  return toast('No steps, weight, calories or sleep column in that file.');
+ var rows=[];
+ for(var i=1;i<lines.length;i++){
+  var c=csvSplit(lines[i]),d=csvDate(c[cD]);
+  if(!d||d>today())continue;
+  function num(at){var v=Number(String(c[at]||'').replace(/[^0-9.\-]/g,''));
+   return isFinite(v)&&v>0?v:0;}
+  var r={date:d,steps:cS>=0?Math.round(num(cS)):0,
+   weight:cW>=0?Math.round(num(cW)*10)/10:0,
+   kcal:cK>=0?Math.round(num(cK)):0,
+   sleep:cL>=0?Math.round(num(cL)*10)/10:0};
+  if(r.steps||r.weight||r.kcal||r.sleep)rows.push(r);
+ }
+ if(!rows.length)return toast('Nothing usable in that file.');
+ rows.sort(function(a,b){return a.date<b.date?1:-1;});
+ CSVROWS=rows;
+ var has={steps:0,weight:0,kcal:0,sleep:0};
+ rows.forEach(function(r){Object.keys(has).forEach(function(k){if(r[k])has[k]++;});});
+ openSheet('<div class="grab"></div><h3>'+rows.length+' day'+(rows.length===1?'':'s')+' found</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px;line-height:1.5">'+
+  dshort(rows[rows.length-1].date)+' to '+dshort(rows[0].date)+'. '+
+  Object.keys(has).filter(function(k){return has[k];})
+   .map(function(k){return has[k]+' with '+k;}).join(', ')+'.</div>'+
+  '<div class="list" style="margin-top:13px">'+rows.slice(0,6).map(function(r){
+   return '<div class="row"><div class="nm"><b>'+dshort(r.date)+'</b><i>'+
+    [r.steps?N(r.steps)+' steps':'',r.weight?r.weight+' kg':'',
+     r.kcal?r.kcal+' kcal':'',r.sleep?r.sleep+' h sleep':'']
+     .filter(Boolean).join(' \u00B7 ')+'</i></div></div>';}).join('')+'</div>'+
+  (rows.length>6?'<div style="font-size:11.5px;color:var(--mut);margin-top:8px">'+
+   'and '+(rows.length-6)+' more</div>':'')+
+  '<div class="ban plain" style="margin-top:14px"><span class="ic">\u2139</span><div>'+
+  'Days you already filled in by hand are left alone. Only blanks are filled.</div></div>'+
+  '<button class="go" onclick="csvApply(0)">Fill in the blank days</button>'+
+  '<button class="go ghost" onclick="csvApply(1)">Overwrite everything</button>'+
+  '<button class="go ghost" onclick="CSVROWS=null;closeSheet()">Cancel</button>');
+}
+function csvApply(force){
+ if(!CSVROWS)return;
+ mark('that import');
+ var n=0;
+ CSVROWS.forEach(function(r){
+  var h=D.hlog[r.date]=D.hlog[r.date]||{};
+  var touched=false;
+  if(r.steps&&(force||!h.steps)){h.steps=r.steps;touched=true;}
+  if(r.weight&&(force||!h.weight)){h.weight=r.weight;touched=true;}
+  if(r.sleep&&(force||!h.sleep)){h.sleep=r.sleep;touched=true;}
+  if(r.kcal&&(force||!h.burnExtra)){h.burnExtra=r.kcal;touched=true;}
+  if(touched)n++;
+ });
+ CSVROWS=null;save();closeSheet();draw();
+ toast(n+' day'+(n===1?'':'s')+' filled in.');
+}
+
 function keyMask(){
  var k=D.ai.key||'';
  if(k.length<14)return k;
