@@ -2836,12 +2836,59 @@ function emiCash(){
  return liveDebts().reduce(function(a,d){
   return a+((d.id===skip)?0:(Number(d.emi)||0));},0);
 }
-function monthlyGap(){return emiCash()+billTotal()-inHand();}
+function monthlyGap(){return emiCash()+billTotal()+livingCost()-inHand();}
 
 /* ================= RIDING DAYS LEFT =================
    Counted, not forecast. Every rupee he logs comes straight off the total, so the
    number moves the moment he writes something down. The only estimate in it is the
    divisor, and the sheet shows exactly which of his days produced it. */
+/* ================= WHAT A DAY REALLY LEAVES =================
+   Earning is not keeping. Food, repairs and the rest go out of the same pocket, so a
+   riding day is worth what survives it, not what arrived. One-off spends are left out,
+   because a washing machine is not a monthly event. */
+function isOneOff(t){return !!(t&&t.oneoff);}
+function billNameSet(){
+ var m={};(D.bills||[]).forEach(function(b){m[(b.name||'').trim().toLowerCase()]=1;});
+ return m;
+}
+/* Everyday spending on a day: not a loan, not one of the fixed bills, not petrol. */
+function livingOn(day){
+ var bn=billNameSet(),n=0;
+ D.tx.forEach(function(t){
+  if(t.date!==day||t.type!=='out')return;
+  if(t.cat==='Debt'||t.cat==='Fuel')return;
+  if(t.cat==='Bills'&&bn[(t.note||'').trim().toLowerCase()])return;
+  if(isOneOff(t))return;
+  n+=t.amount;
+ });
+ return n;
+}
+/* What he spends to live, per month, measured over a real stretch of his own days. */
+function livingMonthly(){
+ if(D.settings.livingSet>0)return {amount:Math.round(D.settings.livingSet),
+  days:0,span:0,mine:true,oneoffs:0};
+ var bn=billNameSet(),byDay={},oneoffs=0,firstAny=null;
+ var cut=new Date(Date.now()-90*864e5).toISOString().slice(0,10);
+ D.tx.forEach(function(t){
+  if(t.date<cut)return;
+  /* the stretch is however long he has been logging at all, not only the days he
+     happened to spend \u2014 otherwise a quiet first week makes him look extravagant */
+  if(!firstAny||t.date<firstAny)firstAny=t.date;
+  if(t.type!=='out')return;
+  if(t.cat==='Debt'||t.cat==='Fuel')return;
+  if(t.cat==='Bills'&&bn[(t.note||'').trim().toLowerCase()])return;
+  if(isOneOff(t)){oneoffs+=t.amount;return;}
+  byDay[t.date]=(byDay[t.date]||0)+t.amount;
+ });
+ var days=Object.keys(byDay).length;
+ if(!days||!firstAny)return {amount:0,days:0,span:0,mine:false,oneoffs:oneoffs};
+ var span=Math.max(1,Math.round((Date.now()-new Date(firstAny+'T12:00'))/864e5)+1);
+ var total=Object.keys(byDay).reduce(function(a,k){return a+byDay[k];},0);
+ return {amount:Math.round(total/span*30),days:days,span:span,mine:false,
+  oneoffs:oneoffs,perDay:Math.round(total/span)};
+}
+function livingSure(){var L=livingMonthly();return L.mine||L.span>=21;}
+
 function rideDayList(backDays){
  var cut=new Date(Date.now()-(backDays||60)*864e5).toISOString().slice(0,10);
  var earn={},fuel={};
@@ -2851,7 +2898,11 @@ function rideDayList(backDays){
   else if(t.type==='out'&&t.cat==='Fuel')fuel[t.date]=(fuel[t.date]||0)+t.amount;
  });
  return Object.keys(earn).sort().map(function(d){
-  return {date:d,gross:earn[d],fuel:fuel[d]||0,net:earn[d]-(fuel[d]||0)};});
+  var lv=livingOn(d);
+  return {date:d,gross:earn[d],fuel:fuel[d]||0,living:lv,
+   net:earn[d]-(fuel[d]||0),            /* after petrol only */
+   left:earn[d]-(fuel[d]||0)-lv};       /* after everything he spent that day */
+ });
 }
 /* The middle day, not the mean. One freak day cannot drag the whole number about.
    Today is left out of it: the day is not finished, and a half-logged day would
@@ -2859,16 +2910,23 @@ function rideDayList(backDays){
 function typicalDay(){
  var set=Number((D.settings||{}).dayAssume);
  if(set>0)return Math.round(set);        /* his own figure wins over mine */
+ /* Always after petrol. Everyday spending is taken off once, as a monthly figure in
+    the forecast, because he eats on days he does not ride as well. */
+ return typicalBy('net');
+}
+/* 'net' is after petrol only. 'left' is after everything he spent that day. */
+function typicalBy(which){
  var t=today();
  var L=rideDayList().filter(function(x){return x.date!==t;})
-  .slice(-14).map(function(x){return x.net;}).sort(function(a,b){return a-b;});
+  .slice(-14).map(function(x){return which==='net'?x.net:x.left;})
+  .sort(function(a,b){return a-b;});
  if(!L.length){
   var any=rideDayList();
   if(!any.length)return 0;
-  return Math.max(0,any[any.length-1].net);
+  return Math.max(0,which==='net'?any[any.length-1].net:any[any.length-1].left);
  }
  var m=Math.floor(L.length/2);
- return Math.round(L.length%2?L[m]:(L[m-1]+L[m])/2);
+ return Math.max(0,Math.round(L.length%2?L[m]:(L[m-1]+L[m])/2));
 }
 function gigThisMonth(){
  var r=range('month'),n=0;
@@ -2906,6 +2964,8 @@ function plan(ridePerMonth,startCash){
  if(!list.length||!per)return res;
  var cash=(startCash==null?liquid():startCash);
  var skip=deductId(),ded=salaryDeduct(),bills=billTotal(),hand=inHand();
+ var liv=livingCost();              /* food and the rest, every month */
+ bills+=liv;
  /* What is already settled this month must not be charged again. His balance is low
     precisely because he has paid it, and billing him twice invented a crisis. */
  var paidM=D.paid[ym()]||{};
@@ -3045,6 +3105,16 @@ function dayStats(){
   mid:Math.round(L.length%2?L[m]:(L[m-1]+L[m])/2),
   mean:Math.round(L.reduce(function(a,b){return a+b;},0)/L.length)};
 }
+/* whether the forecast charges him for living at all */
+function livingOn_(){return (D.settings||{}).dayNet!==0;}
+function livingCost(){return livingOn_()?(livingMonthly().amount||0):0;}
+function setDayNet(v){
+ var was=daysLeft().days;
+ D.settings.dayNet=v?1:0;save();closeSheet();draw();
+ var now=daysLeft().days,d=now-was;
+ toast(v?('Everyday spending counted \u2014 '+(d>0?N(d)+' more riding days':'no change'))
+       :('Everyday spending ignored \u2014 '+(d<0?N(-d)+' days off':'no change')));
+}
 function setAssume(v){
  if(v)D.settings.dayAssume=v;else delete D.settings.dayAssume;
  save();closeSheet();draw();
@@ -3061,11 +3131,34 @@ function assumeSheet(){
    '<span style="font-size:11px;color:var(--mut)">'+note+'</span></span>'+
    '<b style="color:'+(on?'var(--g2)':'var(--mut)')+'">'+R(val)+'</b></button>';
  }
+ var after=livingOn_(), L=livingMonthly();
  openSheet('<div class="grab"></div><h3>Days you have not ridden yet</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:5px;line-height:1.6">'+
   'Every day you have already logged is counted at exactly what you earned. This figure is '+
   'only used for days that have not happened. Pick which of your own days to judge the '+
   'future by.</div>'+
+
+  '<div class="mic" style="margin-top:17px">Your everyday spending</div>'+
+  '<div class="chips">'+
+  '<button class="'+(after?'on':'')+'" onclick="setDayNet(1)">Count it</button>'+
+  '<button class="'+(after?'':'on')+'" onclick="setDayNet(0)">Ignore it</button>'+
+  '</div>'+
+  '<div style="font-size:11.5px;color:var(--mut);margin-top:9px;line-height:1.55">'+
+  (after
+   ?'Food, repairs and the rest come off every month before anything reaches a loan. '+
+    'Counted this way a riding day leaves you about <b>'+R(typicalBy('left'))+'</b> of the '+
+    R(typicalBy('net'))+' it earns after petrol.'
+   :'Everyday spending is being ignored, so the app assumes every spare rupee reaches a '+
+    'loan. That makes the date look nearer than it really is.')+
+  '</div>'+
+  (after?'<div style="font-size:11.5px;color:var(--mut);margin-top:9px;line-height:1.55">'+
+   (L.mine?'Using the '+R(L.amount)+' a month you typed in.'
+    :(L.days?'Measured from '+L.days+' day'+(L.days===1?'':'s')+' of spending over '+L.span+
+      ' \u2014 about '+R(L.amount)+' a month'+
+      (L.span<21?'. Too short a stretch to be sure yet.':'.')
+     :'No everyday spending logged yet, so nothing is being taken off.'))+
+   (L.oneoffs?' '+R(L.oneoffs)+' marked one-off and left out.':'')+
+   '</div>':'')+
   '<div style="margin-top:14px">'+
   row('Your worst day',st.low,'the most cautious')+
   row('Your middle day',st.mid,'half your days beat this')+
@@ -3258,6 +3351,8 @@ function freedomSheet(){
   '<div style="font-size:12.5px;color:var(--mut);line-height:1.85;margin-top:7px">'+
   'Everything going out before the last loan dies: <b style="color:var(--ink)">'+
    R(here.paidOut)+'</b><br>'+
+  '<span style="font-size:11.5px">(loans, bills'+(livingOn_()?' and everyday spending':'')+
+   ')</span><br>'+
   'Salary arriving over that time: \u2212'+R(here.salaryIn)+'<br>'+
   'Already in your accounts: \u2212'+R(liquid())+'<br>'+
   'So riding must find: <b style="color:var(--ink)">'+R(dl.need)+'</b><br>'+
@@ -3271,6 +3366,12 @@ function freedomSheet(){
   'Salary in hand: '+R(inHand())+
    (salaryDeduct()?' (after '+R(salaryDeduct())+' taken off)':'')+'<br>'+
   'Bills: '+R(billTotal())+' \u00B7 Instalments: '+R(emiCash())+'<br>'+
+  (livingOn_()
+   ? 'Everyday spending: '+R(livingCost())+' a month'+
+     (livingMonthly().mine?' (your figure)':
+      (livingMonthly().span?' (from '+livingMonthly().days+' day'+
+       (livingMonthly().days===1?'':'s')+' over '+livingMonthly().span+')':''))+'<br>'
+   : '<span style="color:var(--amber)">Everyday spending not counted</span><br>')+
   'A riding day earns you: <b style="color:var(--ink)">'+R(per)+'</b> after petrol<br>'+
   'You have been riding about '+pace.pace+' days a month'+
    (pace.sure?'':' \u2014 judged from only '+pace.days+' day'+(pace.days===1?'':'s')+
@@ -3664,8 +3765,11 @@ var STREAKS={
  onPlan:{t:'onPlan',label:'days on target',icon:'\uD83C\uDFAF', what:'staying inside your calories'},
  moved: {t:'moved', label:'days moving',  icon:'\u26A1',       what:'moving'},
  money: {t:'money', label:'days logged',  icon:'\uD83D\uDD25', what:'logging your money'},
- income:{t:'income',label:'earning days', icon:'\uD83D\uDCB0', what:'bringing something in'},
- saved: {t:'saved', label:'days saved',   icon:'\uD83C\uDFAF', what:'putting money aside'}
+ income:{t:'income',label:'earning days', icon:'\uD83D\uDCB0', what:'bringing something in',
+         amount:function(d){return inDay(d);}, head:'What you brought in'},
+ saved: {t:'saved', label:'days saved',   icon:'\uD83C\uDFAF', what:'putting money aside',
+         amount:function(d){return pots().reduce(function(a,p){return a+intoAcct(p.acct,d);},0);},
+         head:'What you put aside'}
 };
 function longestRun(test,days){
  var best=0,run=0;
@@ -3691,6 +3795,39 @@ function streakSheet(key){
   grid+='<div title="'+d+'" style="aspect-ratio:1;border-radius:5px;background:'+
    (on?(j===0?'var(--g1)':'var(--g3)'):'#EDECE5')+'"></div>';
  }
+ /* For a streak that is about money, the days are worth more as amounts than as a
+    list of the days he failed. Biggest first, with the total under it. */
+ var moneyBlock='';
+ if(S.amount){
+  var rows=[],tot=0;
+  for(var k=0;k<30;k++){
+   var dd=dayAgo(k),v=Math.round(S.amount(dd)||0);
+   if(v>0){rows.push({date:dd,amount:v});tot+=v;}
+  }
+  if(rows.length){
+   /* not named best: var is function-scoped and would clobber the streak's own best */
+   var topDay=rows.reduce(function(a,b){return b.amount>a.amount?b:a;});
+   moneyBlock='<div class="mic" style="margin-top:18px">'+S.head+'</div>'+
+    '<div class="list">'+rows.slice(0,12).map(function(r){
+     return '<div class="row"><div class="nm"><b>'+dshort(r.date)+'</b>'+
+      (r.date===today()?'<i>today</i>':r.date===dayAgo(1)?'<i>yesterday</i>':'')+'</div>'+
+      '<b style="margin-left:auto" class="'+(r.amount>=topDay.amount?'grn':'')+'">'+
+      R(r.amount)+'</b></div>';}).join('')+'</div>'+
+    '<div style="font-size:12px;color:var(--mut);margin-top:9px;line-height:1.6">'+
+    R(tot)+' over '+rows.length+' day'+(rows.length===1?'':'s')+
+    ' \u00B7 best day '+R(topDay.amount)+' on '+dshort(topDay.date)+
+    ' \u00B7 '+R(Math.round(tot/rows.length))+' on a typical day</div>';
+  } else {
+   moneyBlock='<div class="ban plain" style="margin-top:16px"><span class="ic">\u2139</span>'+
+    '<div>Nothing in the last 30 days yet.</div></div>';
+  }
+ } else {
+  moneyBlock=(missed.length?'<div class="mic" style="margin-top:18px">Days you missed</div>'+
+   '<div style="font-size:12.5px;color:var(--mut);margin-top:7px;line-height:1.7">'+
+   missed.map(function(d){return dshort(d);}).join('<br>')+'</div>'
+   :'<div class="ban" style="margin-top:16px"><span class="ic">\uD83C\uDFC6</span><div>'+
+   'Not one missed day in the last month.</div></div>');
+ }
  openSheet('<div class="grab"></div><h3>'+S.icon+' '+st.n+' '+S.label+'</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
    (st.live?'Today is already counted.':st.n?'Still alive \u2014 but today is not done yet.':
@@ -3702,11 +3839,7 @@ function streakSheet(key){
   '</div>'+
   '<div class="mic" style="margin-top:18px">Last 30 days</div>'+
   '<div style="display:grid;grid-template-columns:repeat(15,1fr);gap:4px;margin-top:9px">'+grid+'</div>'+
-  (missed.length?'<div class="mic" style="margin-top:18px">Days you missed</div>'+
-   '<div style="font-size:12.5px;color:var(--mut);margin-top:7px;line-height:1.7">'+
-   missed.map(function(d){return dshort(d);}).join('<br>')+'</div>':
-   '<div class="ban" style="margin-top:16px"><span class="ic">\uD83C\uDFC6</span><div>'+
-   'Not one missed day in the last month.</div></div>')+
+  moneyBlock+
   (!st.live?'<div class="ban amber"><span class="ic">\uD83D\uDD25</span><div>'+
    'Today is not counted yet. '+(st.n?'Keep the '+st.n+'-day run alive by ':'Start a run by ')+
    S.what+'.</div></div>':'')+
@@ -4186,7 +4319,7 @@ function runActions(list,thumb){
 }
 
 /* ===== self test: turns guesswork into facts ===== */
-var APP_VERSION='2026-11-14h';
+var APP_VERSION='2026-11-16a';
 function diagSheet(){
  openSheet('<div class="grab"></div><h3>Self test</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
@@ -4219,7 +4352,7 @@ function copyDiag(){
 }
 function runDiag(){
  DIAG=[];
- diagLine('App version',APP_VERSION==='2026-11-14h'?'ok':'warn',APP_VERSION);
+ diagLine('App version',APP_VERSION==='2026-11-16a'?'ok':'warn',APP_VERSION);
  var where=location.hostname||'local file';
  diagLine('Running from',blocked()?'no':'ok',
   blocked()?where+' \u2014 inside Claude, outside calls are blocked here':where);
@@ -4828,55 +4961,115 @@ function delFuel(id){
 function lents(){return (D.lent||[]).slice().sort(function(a,b){
  if(!!a.back!==!!b.back)return a.back?1:-1;
  return a.date<b.date?1:-1;});}
-function lentOut(){return (D.lent||[]).filter(function(l){return !l.back;})
- .reduce(function(x,l){return x+l.amount;},0);}
-function addLent(who,amount,acct,note){
+function lentOut(){return (D.lent||[]).reduce(function(x,l){return x+lentLeft(l);},0);}
+function addLent(who,amount,acct,note,when){
  if(!who||!amount)return;
  mark('lending '+who+' '+R(amount));
- var id=nid(),tid=nid();
- D.lent=(D.lent||[]).concat([{id:id,who:who,amount:amount,date:today(),note:note||'',
-  acct:acct,txid:tid,back:null}]);
- D.tx.push({id:tid,date:today(),amount:amount,type:'lend',acct:acct,
+ var id=nid(),tid=nid(),dt=when||today();
+ D.lent=(D.lent||[]).concat([{id:id,who:who,amount:amount,date:dt,note:note||'',
+  acct:acct,txid:tid,back:null,pays:[]}]);
+ D.tx.push({id:tid,date:dt,amount:amount,type:'lend',acct:acct,
   note:'Lent to '+who,lentId:id});
  save();draw();
  toast(R(amount)+' to '+who+' \u2014 in the list until it comes back.');
 }
-function markBack(id,amount){
+/* People pay back in pieces, so every repayment is kept on its own and the record
+   closes itself when nothing is left. */
+function lentPaid(l){
+ return (l.pays||[]).reduce(function(a,p){return a+(Number(p.amount)||0);},0)
+  + (l.backAmount&&!l.pays?Number(l.backAmount):0);
+}
+function lentLeft(l){return Math.max(0,Math.round((Number(l.amount)||0)-lentPaid(l)));}
+function markBack(id,amount,when){
  var l=(D.lent||[]).filter(function(x){return x.id===id;})[0];if(!l)return;
- mark(l.who+' paying back');
- var amt=amount||l.amount;
- l.back=today();l.backAmount=amt;
- var tid=nid();
- l.backTx=tid;
- D.tx.push({id:tid,date:today(),amount:amt,type:'repay',acct:l.acct,
+ var amt=Math.round(Number(amount)||lentLeft(l));
+ if(amt<=0)return toast('How much came back?');
+ var left=lentLeft(l);
+ if(amt>left){
+  if(!confirm(esc(l.who)+' owes '+R(left)+'. Record '+R(amt)+' anyway?'))return;
+ }
+ mark(l.who+' paying back '+R(amt));
+ var dt=when||today(),tid=nid();
+ l.pays=(l.pays||[]).concat([{id:nid(),date:dt,amount:amt,txid:tid}]);
+ D.tx.push({id:tid,date:dt,amount:amt,type:'repay',acct:l.acct,
   note:l.who+' paid back',lentId:id});
+ var now=lentLeft(l);
+ if(now<=0){l.back=dt;l.backAmount=lentPaid(l);}
+ else {l.back=null;}
  save();draw();
- toast(l.who+' paid back '+R(amt)+'.');
+ toast(now<=0?(l.who+' is square \u2014 all '+R(l.amount)+' back.')
+   :(R(amt)+' from '+l.who+' \u2014 '+R(now)+' still out.'));
+}
+function dropPay(id,payId){
+ var l=(D.lent||[]).filter(function(x){return x.id===id;})[0];if(!l)return;
+ var p=(l.pays||[]).filter(function(x){return x.id===payId;})[0];if(!p)return;
+ if(!confirm('Remove the '+R(p.amount)+' '+esc(l.who)+' paid on '+dshort(p.date)+'?'))return;
+ mark('removing that repayment');
+ D.tx=D.tx.filter(function(t){return t.id!==p.txid;});
+ l.pays=(l.pays||[]).filter(function(x){return x.id!==payId;});
+ if(lentLeft(l)>0){l.back=null;l.backAmount=0;}
+ save();draw();lentSheet(id);
 }
 function unBack(id){
  var l=(D.lent||[]).filter(function(x){return x.id===id;})[0];if(!l)return;
  mark('undoing that repayment');
- D.tx=D.tx.filter(function(t){return t.id!==l.backTx;});
- l.back=null;l.backAmount=0;l.backTx=null;
+ /* older records kept a single repayment; clear either shape */
+ if(l.backTx)D.tx=D.tx.filter(function(t){return t.id!==l.backTx;});
+ (l.pays||[]).forEach(function(p){
+  D.tx=D.tx.filter(function(t){return t.id!==p.txid;});});
+ l.pays=[];l.back=null;l.backAmount=0;l.backTx=null;
  save();draw();
 }
 function lentSheet(id){
  var l=(D.lent||[]).filter(function(x){return x.id===id;})[0];if(!l)return;
  var days=Math.round((new Date(today())-new Date(l.date))/864e5);
+ var left=lentLeft(l),paid=lentPaid(l),done=left<=0;
+ var pays=(l.pays||[]).slice().sort(function(x,y){return x.date<y.date?1:-1;});
  openSheet('<div class="grab"></div><h3>'+esc(l.who)+'</h3>'+
-  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+R(l.amount)+' on '+dshort(l.date)+
-   (l.back?' \u00B7 paid back '+dshort(l.back):' \u00B7 '+days+' day'+(days===1?'':'s')+' ago')+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px;line-height:1.5">'+
+   R(l.amount)+' on '+dshort(l.date)+
+   (done?' \u00B7 all back':' \u00B7 '+days+' day'+(days===1?'':'s')+' ago')+
    (l.note?'<br>'+esc(l.note):'')+'</div>'+
-  (l.back
+
+  '<div class="macro" style="margin-top:14px">'+
+   '<div><div class="mic">Lent</div><b>'+R(l.amount)+'</b></div>'+
+   '<div><div class="mic">Back</div><b class="grn">'+R(paid)+'</b></div>'+
+   '<div><div class="mic">Still out</div><b class="'+(done?'grn':'red')+'">'+R(left)+'</b></div>'+
+  '</div>'+
+
+  (pays.length?'<div class="mic" style="margin-top:17px">What has come back</div>'+
+   '<div class="list">'+pays.map(function(p){
+    return '<div class="row"><div class="nm"><b>'+R(p.amount)+'</b><i>'+dshort(p.date)+'</i></div>'+
+     '<button class="chip" style="margin:0 0 0 auto;padding:5px 11px;font-size:11.5px" '+
+     'onclick="dropPay(\''+id+'\',\''+p.id+'\')">Remove</button></div>';
+   }).join('')+'</div>':'')+
+
+  (done
    ? '<div class="ban" style="margin-top:14px"><span class="ic">\u2713</span><div>Settled \u2014 '+
-     R(l.backAmount||l.amount)+' came back into '+esc(acc(l.acct).name)+'.</div></div>'+
-     '<button class="go ghost" onclick="closeSheet();unBack(\''+id+'\')">No, it has not come back</button>'
-   : '<div class="mic" style="margin-top:16px">How much came back</div>'+
-     '<input id="lb_amt" type="number" inputmode="decimal" value="'+l.amount+'">'+
-     '<button class="go" onclick="closeSheet();markBack(\''+id+'\',Number((document.getElementById(\'lb_amt\')||{}).value)||0)">'+
-     'They paid it back</button>')+
+     R(paid)+' came back into '+esc(acc(l.acct).name)+'.</div></div>'+
+     '<button class="go ghost" onclick="closeSheet();unBack(\''+id+'\')">'+
+     'Undo the whole thing</button>'
+   : '<div class="mic" style="margin-top:17px">How much came back</div>'+
+     '<div class="chips">'+
+      [500,1000,2000].filter(function(v){return v<=left;}).map(function(v){
+       return '<button onclick="document.getElementById(\'lb_amt\').value='+v+'">'+R(v)+'</button>';
+      }).join('')+
+      '<button onclick="document.getElementById(\'lb_amt\').value='+left+'">All '+R(left)+'</button>'+
+     '</div>'+
+     '<input id="lb_amt" type="number" inputmode="decimal" value="" placeholder="'+left+'">'+
+     '<div class="mic" style="margin-top:15px">Day it came back</div>'+
+     '<input id="lb_date" type="date" value="'+today()+'" max="'+today()+'">'+
+     '<button class="go" onclick="takeBack(\''+id+'\')">Record it</button>')+
+
   '<button class="go red" onclick="delLent(\''+id+'\')">Remove this record</button>'+
   '<button class="go ghost" onclick="closeSheet()">Close</button>');
+}
+function takeBack(id){
+ var a=Number((document.getElementById('lb_amt')||{}).value)||0;
+ var d=((document.getElementById('lb_date')||{}).value)||today();
+ var l=(D.lent||[]).filter(function(x){return x.id===id;})[0];if(!l)return;
+ if(!a)a=lentLeft(l);
+ closeSheet();markBack(id,a,d);
 }
 function delLent(id){
  var l=(D.lent||[]).filter(function(x){return x.id===id;})[0];if(!l)return;
@@ -4894,14 +5087,20 @@ function lentBlock(){
   '<span class="more">'+(out?R(out)+' still out':'all back')+'</span></div><div class="list">'+
   list.map(function(l){
    var days=Math.round((new Date(today())-new Date(l.date))/864e5);
+   var left=lentLeft(l),paid=lentPaid(l),done=left<=0;
    return '<div class="row" onclick="lentSheet(\''+l.id+'\')">'+
-    '<div class="tile" style="background:'+(l.back?'var(--mint);color:var(--g2)':'#F2F1EB;color:var(--mut)')+
-     ';font-weight:700;font-size:15px">'+(l.back?'\u2713':esc(l.who.charAt(0).toUpperCase()))+'</div>'+
-    '<div class="nm"><b style="'+(l.back?'opacity:.5':'')+'">'+esc(l.who)+'</b><i>'+
-     (l.back?'paid back '+dshort(l.back)
-      :dshort(l.date)+' \u00B7 '+days+' day'+(days===1?'':'s')+' ago')+
+    '<div class="tile" style="background:'+(done?'var(--mint);color:var(--g2)':'#F2F1EB;color:var(--mut)')+
+     ';font-weight:700;font-size:15px">'+(done?'\u2713':esc(l.who.charAt(0).toUpperCase()))+'</div>'+
+    '<div class="nm"><b style="'+(done?'opacity:.5':'')+'">'+esc(l.who)+'</b><i>'+
+     (done?'all back '+dshort(l.back)
+      :(paid?R(paid)+' of '+R(l.amount)+' back':dshort(l.date)+' \u00B7 '+days+
+        ' day'+(days===1?'':'s')+' ago'))+
      (l.note?' \u00B7 '+esc(l.note):'')+'</i></div>'+
-    '<div class="amt'+(l.back?'':' red')+'" style="'+(l.back?'opacity:.4':'')+'">'+R(l.amount)+'</div></div>';
+    '<div style="margin-left:auto;text-align:right">'+
+    '<div class="amt'+(done?'':' red')+'" style="'+(done?'opacity:.4':'')+'">'+
+     R(done?l.amount:left)+'</div>'+
+    (paid&&!done?'<div style="font-size:11px;color:var(--mut);margin-top:1px">still out</div>':'')+
+    '</div></div>';
   }).join('')+'</div></div>';
 }
 
@@ -5656,7 +5855,7 @@ function setupPage(){
   '<div style="font-size:12.5px;color:var(--mut);line-height:1.5">Everything lives on this phone. '+
   (D.settings.backedUp?'Last backup '+(backupAge()===0?'today':backupAge()+' days ago')+'.'
                       :'<b>You have not taken a backup yet.</b>')+'</div>'+
-  '<button class="go" onclick="backupFile()">Save a backup file</button>'+
+  '<button class="go" onclick="backupSheet()">Save a backup file</button>'+
   '<button class="go ghost" onclick="exportData()">Copy my data as text</button>'+
   '<button class="go ghost" onclick="importData()">Restore a backup</button>'+
   '<button class="go ghost" onclick="exportCsv()">Export CSV</button>'+
@@ -5850,9 +6049,20 @@ function openAdd(){
     '" onclick="pickKind(this)">'+k[1]+'</button>';}).join('')+'</div>'+
   '<input id="amt" type="number" inputmode="decimal" placeholder="Amount ₹">'+
   '<div id="extra"></div>'+
+  '<div class="mic" style="margin-top:15px">Day it happened</div>'+
+  '<input id="entdate" type="date" value="'+today()+'" max="'+today()+'">'+
+  '<div id="dhint" style="font-size:11.5px;color:var(--mut);margin-top:6px;display:none"></div>'+
   '<button class="go" onclick="saveEntry()">Save</button>'+
   '<button class="go ghost" onclick="closeSheet()">Cancel</button>');
  pickKind(document.querySelector('#kind .chip'));
+ var dsel=document.getElementById('entdate');
+ if(dsel)dsel.onchange=function(){
+  var h=document.getElementById('dhint');if(!h)return;
+  if(this.value&&this.value!==today()){
+   h.style.display='block';
+   h.textContent='Going onto '+dshort(this.value)+' \u2014 reports and streaks will count it there.';
+  } else h.style.display='none';
+ };
  setTimeout(function(){var a=document.getElementById('amt');if(a)a.focus();},170);
 }
 function pickKind(btn){
@@ -5879,23 +6089,29 @@ function saveEntry(){
  if(!amount||amount<=0)return alert('Enter an amount first.');
  var k=document.getElementById('extra').dataset.kind;
  var note=(document.getElementById('note')||{}).value||'';
+ /* the day it actually happened, which is usually but not always today */
+ var dt=((document.getElementById('entdate')||{}).value||'').slice(0,10)||today();
+ if(dt>today())dt=today();
+ mark('that entry');
  if(k==='lend'){
   var who=((document.getElementById('lw')||{}).value||'').trim();
   if(!who)return toast('Who did you give it to?');
-  addLent(who,amount,document.getElementById('acct').value,note);
+  addLent(who,amount,document.getElementById('acct').value,note,dt);
   closeSheet();return;
  }
  if(k==='move'){
   var f=document.getElementById('from').value,t2=document.getElementById('to').value;
   if(f===t2)return alert('Pick two different accounts.');
-  D.tx.push({id:nid(),date:today(),amount:amount,type:'move',from:f,to:t2,note:note});
+  D.tx.push({id:nid(),date:dt,amount:amount,type:'move',from:f,to:t2,note:note});
  }else if(k==='in')
-  D.tx.push({id:nid(),date:today(),amount:amount,type:'in',
+  D.tx.push({id:nid(),date:dt,amount:amount,type:'in',
    src:document.getElementById('srcsel').value,note:note,acct:document.getElementById('acct').value});
  else
-  D.tx.push({id:nid(),date:today(),amount:amount,type:'out',
+  D.tx.push({id:nid(),date:dt,amount:amount,type:'out',
    cat:document.getElementById('cat').value,note:note,acct:document.getElementById('acct').value});
  save();closeSheet();draw();
+ toastUndo(dt===today()?(R(amount)+' logged')
+  :(R(amount)+' logged on '+dshort(dt)));
 }
 function editTx(id){
  var t=D.tx.filter(function(x){return x.id===id;})[0];if(!t)return;
@@ -5925,6 +6141,12 @@ function editTx(id){
   mid+
   '<div class="mic" style="margin-top:15px">Date</div>'+
   '<input id="e_date" type="date" value="'+t.date+'">'+
+  (t.type==='out'&&t.cat!=='Debt'&&t.cat!=='Fuel'
+   ?'<button class="go ghost" style="text-align:left;display:flex;'+
+    'justify-content:space-between;align-items:center" onclick="toggleOneOff(\''+id+'\')">'+
+    '<span>One-off, not every month<br><span style="font-size:11px;color:var(--mut)">'+
+    'kept out of the forecast</span></span><b style="color:'+
+    (t.oneoff?'var(--g2)':'var(--mut)')+'">'+(t.oneoff?'yes':'no')+'</b></button>':'')+
   '<button class="go" onclick="saveTx(\''+id+'\')">Save changes</button>'+
   (t.type==='move'||t.date===today()?'':
    '<button class="go ghost" onclick="repeatTx(\''+id+'\')">Log this again today</button>')+
@@ -5933,6 +6155,16 @@ function editTx(id){
 }
 /* ================= THE THINGS YOU DO EVERY DAY =================
    Most entries are the same entry again. One tap beats typing it out. */
+/* A washing machine is not a monthly event. Marking it keeps it out of the forecast
+   without hiding it from any report. */
+function toggleOneOff(id){
+ var t=D.tx.filter(function(x){return x.id===id;})[0];if(!t)return;
+ var was=daysLeft().days;
+ t.oneoff=t.oneoff?0:1;save();draw();editTx(id);
+ var now=daysLeft().days,d=was-now;
+ toast(t.oneoff?('Treated as one-off'+(d>0?' \u2014 '+N(d)+' days off':''))
+   :('Counted as regular again'+(d<0?' \u2014 '+N(-d)+' days on':'')));
+}
 function repeatTx(id){
  var t=D.tx.filter(function(x){return x.id===id;})[0];if(!t)return;
  mark('that repeat');
@@ -6085,22 +6317,77 @@ function saveAct2(){
  save();closeSheet();draw();toast('Updated.');
 }
 
-function backupFile(){
+/* ================= BACKUPS =================
+   The meal photos were making the file so big it would not send. They are pictures of
+   plates, not data, so they never go into a backup. And money and health are kept apart,
+   because he does not always want both. */
+function stripPhotos(food){
+ var out={};
+ Object.keys(food||{}).forEach(function(d){
+  out[d]=(food[d]||[]).map(function(f){
+   var c={};Object.keys(f).forEach(function(k){if(k!=='thumb')c[k]=f[k];});
+   return c;});
+ });
+ return out;
+}
+function backupPart(which){
+ var o={v:1,part:which,saved:new Date().toISOString(),app:APP_VERSION};
+ if(which==='finance'||which==='all'){
+  o.accounts=D.accounts;o.sources=D.sources;o.debts=D.debts;o.bills=D.bills;
+  o.budgets=D.budgets;o.tx=D.tx;o.paid=D.paid;o.savings=D.savings;
+  o.fuel=D.fuel;o.odo=D.odo;o.lent=D.lent;
+ }
+ if(which==='health'||which==='all'){
+  o.health=D.health;o.hlog=D.hlog;o.act=D.act;
+  o.food=stripPhotos(D.food);o.dict=D.dict;
+ }
+ if(which==='all'){o.settings=D.settings;o.answered=D.answered;}
+ else {
+  /* the settings each half actually needs, and never the AI key */
+  var st=D.settings||{};
+  o.settings=(which==='finance')
+   ? {name:st.name,petrol:st.petrol,incomeKnown:st.incomeKnown,salary:st.salary,
+      budget:st.budget,backedUp:st.backedUp}
+   : {name:st.name,lang:st.lang,rem:st.rem};
+ }
+ return o;
+}
+function backupSheet(){
+ var n=0;
+ Object.keys(D.food||{}).forEach(function(d){
+  (D.food[d]||[]).forEach(function(f){if(f.thumb)n++;});});
+ openSheet('<div class="grab"></div><h3>Save a backup</h3>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px;line-height:1.6">'+
+  'Pick what you want kept. Meal photos are never included \u2014 they are what made the '+
+  'file too big to send'+(n?' ('+n+' photo'+(n===1?'':'s')+' stored right now)':'')+'.</div>'+
+  '<button class="go" onclick="backupFile(\'finance\')">Money only</button>'+
+  '<div style="font-size:11.5px;color:var(--mut);margin:-4px 0 4px;line-height:1.5">'+
+  'Accounts, loans, bills, every entry, savings, bike and lending.</div>'+
+  '<button class="go ghost" onclick="backupFile(\'health\')">Health only</button>'+
+  '<div style="font-size:11.5px;color:var(--mut);margin:-4px 0 4px;line-height:1.5">'+
+  'Weight, water, meals, activity and the words you have taught it.</div>'+
+  '<button class="go ghost" onclick="backupFile(\'all\')">Both together</button>'+
+  '<button class="go ghost" onclick="closeSheet()">Cancel</button>');
+}
+function backupFile(which){
+ which=which||'all';
  try{
-  var blob=new Blob([JSON.stringify(D)],{type:'application/json'});
-  var name='momentum-backup-'+today()+'.json';
+  var body=JSON.stringify(backupPart(which));
+  var blob=new Blob([body],{type:'application/json'});
+  var name='momentum-'+which+'-'+today()+'.json';
   var f=new File([blob],name,{type:'application/json'});
   if(navigator.canShare&&navigator.canShare({files:[f]})){
    navigator.share({files:[f],title:name}).then(function(){
-    D.settings.backedUp=today();save();}).catch(function(){});
+    D.settings.backedUp=today();save();closeSheet();
+    toast('Saved \u2014 '+Math.round(body.length/1024)+' KB.');}).catch(function(){});
    return;
   }
   var a=document.createElement('a');
   a.href=URL.createObjectURL(blob);a.download=name;
   document.body.appendChild(a);a.click();
   setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},800);
-  D.settings.backedUp=today();save();
-  toast('Saved to your downloads.');
+  D.settings.backedUp=today();save();closeSheet();
+  toast('Saved \u2014 '+Math.round(body.length/1024)+' KB.');
  }catch(e){toast('Could not make the file \u2014 use Copy my data instead.');}
 }
 function exportData(){
@@ -6128,7 +6415,9 @@ function backupNag(){
 }
 function importData(){
  openSheet('<div class="grab"></div><h3>Restore</h3>'+
-  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">This replaces everything here.</div>'+
+  '<div style="font-size:12.5px;color:var(--mut);margin-top:4px;line-height:1.55">'+
+  'A money-only or health-only backup replaces just that half and leaves the rest alone. '+
+  'A full backup replaces everything.</div>'+
   '<textarea id="imp" rows="8" style="font-size:11px" placeholder="Paste your backup"></textarea>'+
   '<button class="go" onclick="doImport(0)">Restore</button>'+
   '<button class="go ghost" onclick="closeSheet()">Cancel</button>');
@@ -6137,15 +6426,35 @@ function doImport(first){
  try{
   var raw=(document.getElementById('imp')||{}).value||'';
   var d=JSON.parse(raw);
-  if(!d.accounts||!d.tx)throw new Error('That does not look like a Momentum backup.');
-  D=d;
+  var part=d.part||(d.accounts&&d.tx?(d.food?'all':'finance'):(d.hlog||d.food?'health':''));
+  if(!part)throw new Error('That does not look like a Momentum backup.');
+
+  if(part!=='all'){
+   /* Half a backup must never wipe the other half. */
+   var FIN=['accounts','sources','debts','bills','budgets','tx','paid','savings','fuel','odo','lent'];
+   var HEA=['health','hlog','act','food','dict'];
+   var keys=(part==='finance')?FIN:HEA;
+   var found=keys.filter(function(k){return d[k]!==undefined;});
+   if(!found.length)throw new Error('There is no '+part+' data in that file.');
+   if(!confirm('This is a '+part+'-only backup. It will replace your '+part+' data and leave '+
+    'the rest of the app exactly as it is. Go ahead?'))return;
+   mark('that restore');
+   keys.forEach(function(k){if(d[k]!==undefined)D[k]=d[k];});
+   if(d.settings)Object.keys(d.settings).forEach(function(j){
+    if(d.settings[j]!==undefined&&j!=='ready')D.settings[j]=d.settings[j];});
+  } else {
+   if(!d.accounts||!d.tx)throw new Error('That does not look like a Momentum backup.');
+   D=d;
+  }
   Object.keys(SEED).forEach(function(k){
    if(D[k]===undefined)D[k]=clone(SEED[k]);
    else if(k==='health'||k==='settings'||k==='ai')
     Object.keys(SEED[k]).forEach(function(j){if(D[k][j]===undefined)D[k][j]=SEED[k][j];});});
   D.settings.ready=1;
+  try{rebuildIndex();}catch(e){}
   save();closeSheet();chrome(true);draw();
-  toast(first?'Restored \u2014 everything is back.':'Backup restored.');
+  toast(first?'Restored \u2014 everything is back.'
+   :(part==='all'?'Backup restored.':'Your '+part+' data is back.'));
  }catch(e){alert('Could not restore: '+e.message);}
 }
 function exportCsv(){
