@@ -644,6 +644,25 @@ function balance(id){
  return b;
 }
 function liquid(){return D.accounts.reduce(function(s,a){return s+balance(a.id);},0);}
+/* ================= WHAT IS ACTUALLY YOURS TO FIGHT WITH =================
+   Money in a savings pot is spoken for \u2014 college fees are not debt money, however
+   they look in a bank balance. Money lent out is the opposite: gone from the account
+   but still his, and coming back. The forecast has to see both. */
+function savedAside(){
+ var seen={};
+ return pots().reduce(function(x,p){
+  if(!p.acct||seen[p.acct])return x;   /* two pots on one account must not count twice */
+  seen[p.acct]=1;
+  return x+Math.max(0,balance(p.acct));
+ },0);
+}
+function owedToMe(){
+ return (D.lent||[]).reduce(function(x,l){return x+lentLeft(l);},0);
+}
+/* The money the debt plan is allowed to count on. */
+function warChest(){
+ return Math.round(liquid()-savedAside()+owedToMe());
+}
 function inDay(d){return D.tx.filter(function(t){return t.date===d&&t.type==='in';})
  .reduce(function(s,t){return s+t.amount;},0);}
 function outDay(d){return D.tx.filter(function(t){return t.date===d&&t.type==='out';})
@@ -2962,7 +2981,7 @@ function plan(ridePerMonth,startCash){
   ridePerMonth:ridePerMonth,endCash:0,clear:!list.length,days:0,
   paidOut:0,salaryIn:0,rideIn:0};
  if(!list.length||!per)return res;
- var cash=(startCash==null?liquid():startCash);
+ var cash=(startCash==null?warChest():startCash);
  var skip=deductId(),ded=salaryDeduct(),bills=billTotal(),hand=inHand();
  var liv=livingCost();              /* food and the rest, every month */
  bills+=liv;
@@ -3026,7 +3045,7 @@ function plan(ridePerMonth,startCash){
     salary that arrives, less the money already in his accounts. Every rupee he logs
     comes straight off this, with nothing rounded away. */
  res.needFromRiding=Math.max(0,Math.round(
-  res.paidOut-res.salaryIn-(startCash==null?liquid():startCash)));
+  res.paidOut-res.salaryIn-(startCash==null?warChest():startCash)));
  var dt=new Date();dt.setDate(dt.getDate()+d);
  res.date=dt;
  return res;
@@ -3039,7 +3058,12 @@ function planDate(p){
 function ridePace(){
  var L=rideDayList(60);
  if(!L.length)return {days:0,span:0,pace:0,sure:false};
+ /* Measured over however long he has been logging, not from his first riding day.
+    Starting the clock at the first ride makes every rest day before it disappear and
+    flatters the pace badly. */
+ var cut=new Date(Date.now()-60*864e5).toISOString().slice(0,10);
  var first=L[0].date;
+ D.tx.forEach(function(t){if(t.date>=cut&&t.date<first)first=t.date;});
  var span=Math.max(1,Math.round((Date.now()-new Date(first+'T12:00'))/864e5)+1);
  var sure=span>=21;
  var raw=L.length/span*30;
@@ -3085,7 +3109,7 @@ function todayMoved(){
  if(t<=0)return null;
  var rp=ridePace();
  if(!rp.pace||!typicalDay())return {money:t,days:null};
- var now=plan(rp.pace),without=plan(rp.pace,liquid()-t);
+ var now=plan(rp.pace),without=plan(rp.pace,warChest()-t);
  return {money:t,days:Math.max(0,without.rideDays-now.rideDays),
   calDays:Math.max(0,without.days-now.days)};
 }
@@ -3354,7 +3378,7 @@ function freedomSheet(){
   '<span style="font-size:11.5px">(loans, bills'+(livingOn_()?' and everyday spending':'')+
    ')</span><br>'+
   'Salary arriving over that time: \u2212'+R(here.salaryIn)+'<br>'+
-  'Already in your accounts: \u2212'+R(liquid())+'<br>'+
+  'Money you can fight with: \u2212'+R(warChest())+'<br>'+
   'So riding must find: <b style="color:var(--ink)">'+R(dl.need)+'</b><br>'+
   'At '+R(per)+' a day: <b style="color:var(--ink)">'+N(dl.days)+' riding days</b>'+
   '</div></div>'+
@@ -3362,7 +3386,12 @@ function freedomSheet(){
   '<div class="card" style="margin-top:12px">'+
   '<div class="mic">Where it starts</div>'+
   '<div style="font-size:12.5px;color:var(--mut);line-height:1.85;margin-top:7px">'+
-  'In your accounts today: <b style="color:var(--ink)">'+R(liquid())+'</b><br>'+
+  'In your accounts today: '+R(liquid())+'<br>'+
+  (savedAside()?'Less savings you cannot touch: \u2212'+R(savedAside())+'<br>':'')+
+  (owedToMe()?'Plus still owed to you: +'+R(owedToMe())+
+    ' <span style="font-size:11px">('+(D.lent||[]).filter(function(l){return lentLeft(l)>0;})
+     .map(function(l){return esc(l.who)+' '+R(lentLeft(l));}).join(', ')+')</span><br>':'')+
+  'Yours to fight with: <b style="color:var(--ink)">'+R(warChest())+'</b><br>'+
   'Salary in hand: '+R(inHand())+
    (salaryDeduct()?' (after '+R(salaryDeduct())+' taken off)':'')+'<br>'+
   'Bills: '+R(billTotal())+' \u00B7 Instalments: '+R(emiCash())+'<br>'+
@@ -4319,7 +4348,7 @@ function runActions(list,thumb){
 }
 
 /* ===== self test: turns guesswork into facts ===== */
-var APP_VERSION='2026-11-16a';
+var APP_VERSION='2026-11-16c';
 function diagSheet(){
  openSheet('<div class="grab"></div><h3>Self test</h3>'+
   '<div style="font-size:12.5px;color:var(--mut);margin-top:4px">'+
@@ -4352,7 +4381,7 @@ function copyDiag(){
 }
 function runDiag(){
  DIAG=[];
- diagLine('App version',APP_VERSION==='2026-11-16a'?'ok':'warn',APP_VERSION);
+ diagLine('App version',APP_VERSION==='2026-11-16c'?'ok':'warn',APP_VERSION);
  var where=location.hostname||'local file';
  diagLine('Running from',blocked()?'no':'ok',
   blocked()?where+' \u2014 inside Claude, outside calls are blocked here':where);
@@ -4980,7 +5009,7 @@ function lentPaid(l){
   + (l.backAmount&&!l.pays?Number(l.backAmount):0);
 }
 function lentLeft(l){return Math.max(0,Math.round((Number(l.amount)||0)-lentPaid(l)));}
-function markBack(id,amount,when){
+function markBack(id,amount,when,into){
  var l=(D.lent||[]).filter(function(x){return x.id===id;})[0];if(!l)return;
  var amt=Math.round(Number(amount)||lentLeft(l));
  if(amt<=0)return toast('How much came back?');
@@ -4990,15 +5019,20 @@ function markBack(id,amount,when){
  }
  mark(l.who+' paying back '+R(amt));
  var dt=when||today(),tid=nid();
- l.pays=(l.pays||[]).concat([{id:nid(),date:dt,amount:amt,txid:tid}]);
- D.tx.push({id:tid,date:dt,amount:amt,type:'repay',acct:l.acct,
+ /* where it lands decides what it does: a savings pot locks it away for the fees,
+    anywhere else and it joins the fight against the loans */
+ var dest=into||l.acct;
+ l.pays=(l.pays||[]).concat([{id:nid(),date:dt,amount:amt,txid:tid,acct:dest}]);
+ D.tx.push({id:tid,date:dt,amount:amt,type:'repay',acct:dest,
   note:l.who+' paid back',lentId:id});
  var now=lentLeft(l);
  if(now<=0){l.back=dt;l.backAmount=lentPaid(l);}
  else {l.back=null;}
  save();draw();
- toast(now<=0?(l.who+' is square \u2014 all '+R(l.amount)+' back.')
-   :(R(amt)+' from '+l.who+' \u2014 '+R(now)+' still out.'));
+ var isPot=pots().some(function(p){return p.acct===dest;});
+ toast((now<=0?(l.who+' is square \u2014 all '+R(l.amount)+' back')
+   :(R(amt)+' from '+l.who+' \u2014 '+R(now)+' still out'))+
+   ', into '+acc(dest).name+(isPot?' (set aside)':''));
 }
 function dropPay(id,payId){
  var l=(D.lent||[]).filter(function(x){return x.id===id;})[0];if(!l)return;
@@ -5039,7 +5073,8 @@ function lentSheet(id){
 
   (pays.length?'<div class="mic" style="margin-top:17px">What has come back</div>'+
    '<div class="list">'+pays.map(function(p){
-    return '<div class="row"><div class="nm"><b>'+R(p.amount)+'</b><i>'+dshort(p.date)+'</i></div>'+
+    return '<div class="row"><div class="nm"><b>'+R(p.amount)+'</b><i>'+dshort(p.date)+
+     (p.acct?' \u00B7 into '+esc(acc(p.acct).name):'')+'</i></div>'+
      '<button class="chip" style="margin:0 0 0 auto;padding:5px 11px;font-size:11.5px" '+
      'onclick="dropPay(\''+id+'\',\''+p.id+'\')">Remove</button></div>';
    }).join('')+'</div>':'')+
@@ -5059,6 +5094,15 @@ function lentSheet(id){
      '<input id="lb_amt" type="number" inputmode="decimal" value="" placeholder="'+left+'">'+
      '<div class="mic" style="margin-top:15px">Day it came back</div>'+
      '<input id="lb_date" type="date" value="'+today()+'" max="'+today()+'">'+
+     '<div class="mic" style="margin-top:15px">Where it goes</div>'+
+     '<select id="lb_acct">'+D.accounts.map(function(a){
+       var isPot=pots().filter(function(p){return p.acct===a.id;})[0];
+       return '<option value="'+a.id+'"'+(a.id===l.acct?' selected':'')+'>'+
+        esc(a.name)+(isPot?' \u2014 '+esc(isPot.name||'savings'):'')+'</option>';
+      }).join('')+'</select>'+
+     '<div style="font-size:11.5px;color:var(--mut);margin-top:7px;line-height:1.5">'+
+     'Into a savings pot it is set aside and will not count toward clearing your loans. '+
+     'Anywhere else and it joins the fight.</div>'+
      '<button class="go" onclick="takeBack(\''+id+'\')">Record it</button>')+
 
   '<button class="go red" onclick="delLent(\''+id+'\')">Remove this record</button>'+
@@ -5067,9 +5111,10 @@ function lentSheet(id){
 function takeBack(id){
  var a=Number((document.getElementById('lb_amt')||{}).value)||0;
  var d=((document.getElementById('lb_date')||{}).value)||today();
+ var into=((document.getElementById('lb_acct')||{}).value)||'';
  var l=(D.lent||[]).filter(function(x){return x.id===id;})[0];if(!l)return;
  if(!a)a=lentLeft(l);
- closeSheet();markBack(id,a,d);
+ closeSheet();markBack(id,a,d,into);
 }
 function delLent(id){
  var l=(D.lent||[]).filter(function(x){return x.id===id;})[0];if(!l)return;
