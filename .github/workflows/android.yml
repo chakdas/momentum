@@ -23,6 +23,24 @@ jobs:
       - name: Get the repo
         uses: actions/checkout@v4
 
+      # Say plainly what is and is not here, so a failure is easy to read.
+      - name: What is in the repo
+        run: |
+          echo "--- files at the top level ---"
+          ls -la
+          for f in index.html package.json capacitor.config.json sw.js; do
+            if [ -f "$f" ]; then echo "FOUND    $f"; else echo "MISSING  $f"; fi
+          done
+          if [ ! -f package.json ] || [ ! -f capacitor.config.json ] || [ ! -f index.html ]; then
+            echo ""
+            echo "============================================================"
+            echo " Stopping here. index.html, package.json and"
+            echo " capacitor.config.json must all sit at the TOP of the repo,"
+            echo " next to each other - not inside any folder."
+            echo "============================================================"
+            exit 1
+          fi
+
       - name: Node
         uses: actions/setup-node@v4
         with:
@@ -37,27 +55,33 @@ jobs:
       - name: Android SDK
         uses: android-actions/setup-android@v3
 
-      # The key is made once and kept in the repo. Every later build signs with
-      # the same key, which is what lets a new APK install over the old one
-      # instead of making you uninstall first.
-      - name: Make the signing key, once
+      # The key is made once and kept in the repo, so every later APK installs
+      # over the previous one instead of making you uninstall first. If saving it
+      # back is not allowed, the build carries on with a throwaway key rather
+      # than failing - you still get an installable app.
+      - name: Signing key
         run: |
-          if [ ! -f keystore/momentum.jks ]; then
-            echo "No key yet - making one."
-            mkdir -p keystore
-            keytool -genkeypair -v \
-              -keystore keystore/momentum.jks \
-              -alias momentum \
-              -keyalg RSA -keysize 2048 -validity 10950 \
-              -storepass momentum -keypass momentum \
-              -dname "CN=Momentum, OU=Personal, O=Momentum, L=Chennai, ST=Tamil Nadu, C=IN"
-            git config user.name  "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add keystore/momentum.jks
-            git commit -m "Keep the signing key so updates install over each other [skip ci]"
-            git push
+          if [ -f keystore/momentum.jks ]; then
+            echo "Key already in the repo - reusing it. Updates will install over the top."
+            exit 0
+          fi
+          echo "No key yet - making one."
+          mkdir -p keystore
+          keytool -genkeypair -v \
+            -keystore keystore/momentum.jks \
+            -alias momentum \
+            -keyalg RSA -keysize 2048 -validity 10950 \
+            -storepass momentum -keypass momentum \
+            -dname "CN=Momentum, OU=Personal, O=Momentum, L=Chennai, ST=Tamil Nadu, C=IN"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add keystore/momentum.jks
+          git commit -m "Keep the signing key so updates install over each other [skip ci]" || true
+          if git push; then
+            echo "Key saved to the repo."
           else
-            echo "Key already there - reusing it."
+            echo "::warning::Could not save the key back to the repo. The app still builds and installs."
+            echo "::warning::To fix: Settings - Actions - General - Workflow permissions - Read and write permissions."
           fi
 
       # Capacitor wants the web files in one folder of their own.
@@ -77,8 +101,6 @@ jobs:
           npx cap add android || true
           npx cap sync android
 
-      # A release build needs a name people can read and a version that climbs,
-      # so each APK is newer than the last in Android's eyes.
       # The status-bar icon has to be a flat white shape, so it gets drawn here
       # rather than reusing the colourful launcher icon.
       - name: Notification icon
@@ -86,16 +108,12 @@ jobs:
           set -e
           RES=android/app/src/main/res
           mkdir -p $RES/drawable-mdpi
-          echo 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAAYUlEQVR42u2SUQ7AIAhDbe9/Z3aB4RA6I4n9tbQG3hhX7WRmtuJnJnylhNmfR0tYWUukhNWdf73zbyioIGbmowpHz09F+GyOqnBvHlWKAOBciloIKky9e+zHNEJGlqirVz2mjFPZ/FlkjAAAAABJRU5ErkJggg==' | base64 -d > $RES/drawable-mdpi/ic_stat_icon.png
-          mkdir -p $RES/drawable-hdpi
-          echo 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAAgUlEQVR42u2VQQ4AIQgDpf//M3vfy4JCs8TOWZuJYl1LCDEEd/eKHFTKVEih+mROpdBxTSdS6JqZXSl0DvCOFLpfU3Y9/lYfYHRNZh9YxRfdD2YLR3LAkonmgSkTyQVb5ivfunvIzOyeHpKQmIAxv45IDcz6OvTKIkLZ6mfnCfHmAbFuc8m/zrDCAAAAAElFTkSuQmCC' | base64 -d > $RES/drawable-hdpi/ic_stat_icon.png
-          mkdir -p $RES/drawable-xhdpi
-          echo 'iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAAqUlEQVR42u2W2QHAIAhDJfvvTFeoyJHWvH+BoELWEkIIIQpxd6+Mj47iK0Wgq/NVItD5bCpEoPvNZ4vA14cEJiZO5i1galxmicDkrM8QgelFdXoei2DLnsQBi0WIxgOTv4nEBZs5241/1yKr7n4kD9iK380HxuJ38oK1+Lf5bXKGm5nJTkuABFwuQIhDjM1O7y44udFPuNFf7IEM41XxD9DtHhmbJYQQcR5Lm5u31ScWCgAAAABJRU5ErkJggg==' | base64 -d > $RES/drawable-xhdpi/ic_stat_icon.png
-          mkdir -p $RES/drawable-xxhdpi
-          echo 'iVBORw0KGgoAAAANSUhEUgAAAEgAAABICAYAAABV7bNHAAAA80lEQVR42u2ZixWAIAzE5PbfGXfQ0s+RDCD3ImJpnwcAAAAAAACuZ++9O+VRRzmdJKnrzukiSZ0/qw6S1P3MqZbU6gzqiCb8sSp3kab8zqskaVKtUyFJ0wrBbEmaWCVnStLUK0SWJE2+X2VI0vTL5+nnUyhWCso6J06uI5e+zqn15NT0OrGu3DqC0evLsV0amUOuveSoPHKUE5lLrnKi8lEonhTUffdE5JS7nL95dYOcP7l1i5yv+dfke9JaazEXY/SMIAQhCEGAIAQBAMB1LNepRtRtn6kGUw2mGlTSCHIWlNEXrsynKc1zx5cHAAAAAODLC/S725Pjk5ClAAAAAElFTkSuQmCC' | base64 -d > $RES/drawable-xxhdpi/ic_stat_icon.png
-          mkdir -p $RES/drawable-xxxhdpi
-          echo 'iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAABL0lEQVR42u3aiQHCMAwDwEb771ymKH5ytwC2VaB5ngcAAAAAAKC5933fyfVnw/Anh5AtT/7UELLpZ2diCNn2mz8thNH/ARtk4xvPpG9Btr5uTgkhm9/1J4SQ7Qut7iHkhlVu5xByyxZD1xBy0/5OxxBy2+ZatxAsxATw/6ez07cgt+7rdwkhNx+qdAght59oVX9+HseJpXXEWW5tPTH82rpi+LX1WYjd9BY05ZDkn3XG8GvrjeHX1h3Dr60/hl/bRwy/tp8Yfm1fMfza/izENi3Etj/9X/QZw6/tN4Zf23cMv7b/c+s28DnnOJRHAAIQAAIQAAIQAAIQAAIAAAC+dlzOrT2+dDnX5VyXcw1/0+VcBCAABHB3AF2u/U3oK9vvXnbvJzdcgNUHAAAAAPD8AHH4I4BSuyeCAAAAAElFTkSuQmCC' | base64 -d > $RES/drawable-xxxhdpi/ic_stat_icon.png
-          echo "Icon written at every size:"; ls -l $RES/drawable-*/ic_stat_icon.png
+          echo 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAAhUlEQVR4nM3SMQ6AIAwF0F9j4gm8gZMn8ARewRN4Ak/gCTyBJ/AEnsATOHkCJzdjHKQJGkIpuPkTEmhfaQsA/xoCoAWwA1gB9ClBDeAEcMs6AAWXoAJwPOBX0DKwAJgdeJ4C9AAWB14+AQ0jm5yADWOanIA1A3Yl4BvAI+ArIGXIjYDU/AJbmxnxv7Z1cwAAAABJRU5ErkJggg==' | base64 -d > $RES/drawable-mdpi/ic_stat_icon.png
+          for D in hdpi xhdpi xxhdpi xxxhdpi; do
+            mkdir -p $RES/drawable-$D
+            cp $RES/drawable-mdpi/ic_stat_icon.png $RES/drawable-$D/ic_stat_icon.png
+          done
+          echo "Icon written:"; ls -l $RES/drawable-*/ic_stat_icon.png
 
       # Use the app's own icon on the home screen instead of Capacitor's default.
       - name: Launcher icon
@@ -117,6 +135,8 @@ jobs:
           done
           ls -l $RES/mipmap-xxhdpi/ || true
 
+      # A release build needs a name people can read and a version that climbs,
+      # so each APK is newer than the last in Android's eyes.
       - name: Name and number this build
         run: |
           VC=$(( 1000 + ${{ github.run_number }} ))
@@ -136,11 +156,14 @@ jobs:
       # parts, and the same result.
       - name: Sign it
         run: |
+          set -e
           BT=$(ls -1 $ANDROID_HOME/build-tools | sort -V | tail -1)
           TOOLS="$ANDROID_HOME/build-tools/$BT"
           echo "Using build-tools $BT"
           UNSIGNED=$(find android/app/build/outputs/apk/release -name "*unsigned*.apk" | head -1)
-          [ -z "$UNSIGNED" ] && UNSIGNED=$(find android/app/build/outputs/apk/release -name "*.apk" | head -1)
+          if [ -z "$UNSIGNED" ]; then
+            UNSIGNED=$(find android/app/build/outputs/apk/release -name "*.apk" | head -1)
+          fi
           echo "Found $UNSIGNED"
           "$TOOLS/zipalign" -v -p 4 "$UNSIGNED" aligned.apk
           "$TOOLS/apksigner" sign \
@@ -152,6 +175,7 @@ jobs:
           "$TOOLS/apksigner" verify --print-certs "Momentum-${{ env.VN }}.apk"
           ls -lh Momentum-${{ env.VN }}.apk
 
+      # Always kept here, whether or not the release below works.
       - name: Keep it on the Actions run
         uses: actions/upload-artifact@v4
         with:
@@ -160,12 +184,27 @@ jobs:
           retention-days: 90
 
       # A release is the easy way to get it onto the phone: open the link,
-      # tap the APK, install.
+      # tap the APK, install. If this is not allowed, the APK is still above.
       - name: Publish it as a release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v${{ env.VN }}" "Momentum-${{ env.VN }}.apk" \
-            --title "Momentum ${{ env.VN }}" \
-            --notes "Built from this repo. Open this page on your phone and tap the APK to install." \
-            || gh release upload "v${{ env.VN }}" "Momentum-${{ env.VN }}.apk" --clobber
+          if gh release create "v${{ env.VN }}" "Momentum-${{ env.VN }}.apk" \
+               --title "Momentum ${{ env.VN }}" \
+               --notes "Open this page on your phone and tap the APK to install."; then
+            echo "Release made."
+          elif gh release upload "v${{ env.VN }}" "Momentum-${{ env.VN }}.apk" --clobber; then
+            echo "Added to the existing release."
+          else
+            echo "::warning::Could not publish a release. Download the APK from the Artifacts box on this page instead."
+            echo "::warning::To fix: Settings - Actions - General - Workflow permissions - Read and write permissions."
+          fi
+
+      - name: Where to get it
+        run: |
+          echo "========================================================"
+          echo " Momentum ${{ env.VN }} is built."
+          echo " On your phone open:"
+          echo "   github.com/${{ github.repository }}/releases"
+          echo " and tap Momentum-${{ env.VN }}.apk"
+          echo "========================================================"
