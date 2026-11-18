@@ -1,5 +1,5 @@
 /* Momentum offline shell. Bump CACHE whenever index.html changes. */
-var CACHE = 'momentum-v36';
+var CACHE = 'momentum-v38';
 var SHELL = ['./', './index.html', './manifest.json',
              './icon-192.png', './icon-512.png', './icon-maskable.png', './apple-touch-icon.png'];
 
@@ -44,5 +44,30 @@ self.addEventListener('fetch', function (e) {
       }
       return res;
     });
+  }));
+});
+
+/* Done / Not yet / Skip on a task reminder */
+self.addEventListener('notificationclick', function (e) {
+  var tag = (e.notification && e.notification.tag) || '';
+  var act = e.action || 'open';
+  e.notification.close();
+  if (tag.indexOf('task:') !== 0) {
+    e.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(function (cs) {
+      if (cs.length) return cs[0].focus();
+      return self.clients.openWindow('./');
+    }));
+    return;
+  }
+  var id = tag.slice(5);
+  e.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(function (cs) {
+    /* app already open - tell it, and only surface the window if they tapped the body */
+    if (cs.length) {
+      cs.forEach(function (c) { c.postMessage({kind:'task', id:id, act:act}); });
+      return act === 'open' ? cs[0].focus() : null;
+    }
+    /* app closed - carry the answer in the URL */
+    return self.clients.openWindow('./?task=' + encodeURIComponent(id) +
+      '&do=' + encodeURIComponent(act === 'open' ? 'open' : act));
   }));
 });
